@@ -9,6 +9,7 @@ import {
   Eye,
   Loader2,
   MoreVertical,
+  Network,
   Pencil,
   Plus,
   RefreshCw,
@@ -277,6 +278,12 @@ export function Sidebar({
                       />
                     )}
                     <span className="min-w-0 flex-1 truncate font-medium">{conn.name}</span>
+                    {conn.ssh?.enabled && (
+                      <Network
+                        className="h-3 w-3 shrink-0 text-sky-400"
+                        aria-label="via SSH tunnel"
+                      />
+                    )}
                     {connLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>

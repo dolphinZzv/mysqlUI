@@ -46,14 +46,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 // ---- connection CRUD ----------------------------------------------------
 
 type connectionInput struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Database string `json:"database"`
-	SSL      string `json:"ssl"`
-	Color    string `json:"color"`
+	Name     string     `json:"name"`
+	Host     string     `json:"host"`
+	Port     int        `json:"port"`
+	User     string     `json:"user"`
+	Password string     `json:"password"`
+	Database string     `json:"database"`
+	SSL      string     `json:"ssl"`
+	Color    string     `json:"color"`
+	SSH      *SSHConfig `json:"ssh"`
 }
 
 func (in connectionInput) toConnection() Connection {
@@ -69,6 +70,7 @@ func (in connectionInput) toConnection() Connection {
 		Database: in.Database,
 		SSL:      in.SSL,
 		Color:    in.Color,
+		SSH:      in.SSH,
 	}
 }
 
@@ -81,6 +83,17 @@ func (in connectionInput) validate() error {
 	}
 	if strings.TrimSpace(in.User) == "" {
 		return errors.New("user is required")
+	}
+	if in.SSH != nil && in.SSH.Enabled {
+		if strings.TrimSpace(in.SSH.Host) == "" {
+			return errors.New("ssh host is required")
+		}
+		if strings.TrimSpace(in.SSH.User) == "" {
+			return errors.New("ssh user is required")
+		}
+		if strings.TrimSpace(in.SSH.Password) == "" && strings.TrimSpace(in.SSH.PrivateKey) == "" {
+			return errors.New("ssh requires a password or a private key")
+		}
 	}
 	return nil
 }

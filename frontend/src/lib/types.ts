@@ -1,3 +1,15 @@
+export interface SSHConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  user: string;
+  authMethod: "password" | "key";
+  password: string;
+  privateKey: string;
+  passphrase: string;
+  ignoreHostKey: boolean;
+}
+
 export interface Connection {
   id: string;
   name: string;
@@ -8,6 +20,7 @@ export interface Connection {
   database: string;
   ssl?: string;
   color?: string;
+  ssh?: SSHConfig;
 }
 
 export interface ConnectionInput {
@@ -19,6 +32,7 @@ export interface ConnectionInput {
   database: string;
   ssl?: string;
   color?: string;
+  ssh?: SSHConfig;
 }
 
 export interface DatabaseInfo {

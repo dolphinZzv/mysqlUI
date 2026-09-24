@@ -10,6 +10,9 @@ shipped as a **single binary** with the UI embedded.
 
 - **Connections** — create / edit / delete / test MySQL servers, with SSL modes.
   Profiles persist to a local JSON file.
+- **MySQL over SSH** — reach databases behind a bastion host using password or
+  private-key (with optional passphrase) authentication, with host-key
+  verification against `~/.ssh/known_hosts` (or an opt-out).
 - **Schema explorer** — sidebar tree of connections → databases → tables, with
   search, lazy loading and right-click actions.
 - **Data browser** — paginated grid with inline cell editing, insert row dialog,
@@ -88,11 +91,85 @@ All configuration is via environment variables:
 | --- | --- | --- |
 | `MYSQLUI_ADDR` | `:8787` | Address the HTTP server listens on. |
 | `MYSQLUI_DATA_DIR` | `data` | Directory holding `connections.json`. |
+| `MYSQLUI_PID_FILE` | `<data>/mysqlui.pid` | PID file used by the daemon commands. |
+| `MYSQLUI_LOG_FILE` | `<data>/mysqlui.log` | Log file for daemon mode. |
 | `MYSQLUI_FRONTEND_DIR` | `../frontend/dist` | Frontend directory for non-embedded builds. |
 
-> **Security:** connection passwords are stored in plaintext in
-> `$MYSQLUI_DATA_DIR/connections.json` (mode `0600`). This tool is intended for
-> local/trusted use. Do not expose it to the public internet.
+> **Security:** connection passwords (and SSH passwords / private keys) are
+> stored in plaintext in `$MYSQLUI_DATA_DIR/connections.json` (mode `0600`). This
+> tool is intended for local/trusted use. Do not expose it to the public internet.
+
+## SSH tunneling
+
+To reach a MySQL server that is only accessible from a jump host, enable
+**Connect through an SSH tunnel** in the connection dialog and fill in:
+
+| Field | Description |
+| --- | --- |
+| SSH host / port | Bastion host (default port `22`). |
+| SSH user | Login user on the bastion. |
+| Authentication | `Password` or `Private key` (PEM, OpenSSH or PKCS#8). |
+| Key passphrase | Optional passphrase for an encrypted private key. |
+| Ignore host key | When off, the bastion's key is verified against `~/.ssh/known_hosts`. |
+
+The **MySQL host/port** fields are then resolved *from the bastion*, i.e. they
+should be the address the bastion uses to reach MySQL (often `127.0.0.1:3306`).
+
+If host-key verification is enabled and the host is unknown, you'll get an error
+telling you to add it to `known_hosts` (e.g. `ssh-keyscan -H <host> >> ~/.ssh/known_hosts`)
+or to tick **Ignore host key verification**.
+
+## Run as a daemon
+
+Run MySQL UI in the background with the built-in daemon commands:
+
+```bash
+mysqlui start      # start in the background
+mysqlui status     # show pid, address and log location
+mysqlui restart    # restart
+mysqlui stop       # stop (graceful shutdown)
+```
+
+The PID file and log file default to `<MYSQLUI_DATA_DIR>/mysqlui.pid` and
+`<MYSQLUI_DATA_DIR>/mysqlui.log`; override them with `MYSQLUI_PID_FILE` and
+`MYSQLUI_LOG_FILE`.
+
+### Install as a system service
+
+```bash
+mysqlui install-service           # systemd user unit (Linux) or launchd agent (macOS)
+mysqlui install-service --system  # systemd system unit (Linux, needs sudo)
+mysqlui install-service --print   # print the unit file without writing it
+```
+
+Linux (user unit):
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now mysqlui
+# keep it running after logout:
+sudo loginctl enable-linger $USER
+```
+
+Linux (system unit):
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mysqlui
+```
+
+macOS:
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.mysqlui.agent.plist
+```
+
+Windows — register a service manually, for example:
+
+```powershell
+sc.exe create mysqlui binPath= "C:\path\to\mysqlui.exe serve" start= auto
+sc.exe start mysqlui
+```
 
 ## Build from source
 
@@ -135,7 +212,11 @@ cd frontend && npm install && npm run dev
 .
 ├── backend/               # Go API server
 │   ├── main.go            # entry point, routing, static/SPA serving
+│   ├── daemon.go          # start/stop/status daemon + service install
+│   ├── daemon_unix.go     # //go:build !windows — setsid / SIGTERM
+│   ├── daemon_windows.go  # //go:build windows — detached process
 │   ├── store.go           # connection store + per-database pools
+│   ├── ssh.go             # SSH tunnel (jump host) support
 │   ├── handlers.go        # connections, schema, rows, query
 │   ├── tableops.go        # filters, export, table designer (DDL), server info
 │   ├── helpers.go         # JSON, identifiers, middleware, SPA handler

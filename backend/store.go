@@ -16,43 +16,48 @@ import (
 
 // Connection is the persisted description of a MySQL server.
 type Connection struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Database string `json:"database"`
-	SSL      string `json:"ssl,omitempty"`
-	Color    string `json:"color,omitempty"`
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Host     string     `json:"host"`
+	Port     int        `json:"port"`
+	User     string     `json:"user"`
+	Password string     `json:"password"`
+	Database string     `json:"database"`
+	SSL      string     `json:"ssl,omitempty"`
+	Color    string     `json:"color,omitempty"`
+	SSH      *SSHConfig `json:"ssh,omitempty"`
 }
 
 // ConnEntry couples a Connection with lazily created connection pools, one per
 // database. Using one pool per database avoids racy `USE db` statements.
 type ConnEntry struct {
-	Info  Connection
-	mu    sync.Mutex
-	pools map[string]*sql.DB
+	Info   Connection
+	mu     sync.Mutex
+	pools  map[string]*sql.DB
+	tunnel *sshTunnel
 }
 
 func newConnEntry(info Connection) *ConnEntry {
-	return &ConnEntry{Info: info, pools: map[string]*sql.DB{}}
+	return &ConnEntry{Info: info, pools: map[string]*sql.DB{}, tunnel: &sshTunnel{}}
 }
 
 func (e *ConnEntry) Close() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	for k, db := range e.pools {
 		_ = db.Close()
 		delete(e.pools, k)
 	}
+	e.mu.Unlock()
+	if e.tunnel != nil {
+		e.tunnel.Close()
+	}
 }
 
-func (e *ConnEntry) dsn(database string) string {
+func (e *ConnEntry) dsn(database, network string) string {
 	cfg := mysql.NewConfig()
 	cfg.User = e.Info.User
 	cfg.Passwd = e.Info.Password
-	cfg.Net = "tcp"
+	cfg.Net = network
 	cfg.Addr = fmt.Sprintf("%s:%d", e.Info.Host, e.Info.Port)
 	cfg.DBName = database
 	cfg.ParseTime = true
@@ -70,6 +75,15 @@ func (e *ConnEntry) dsn(database string) string {
 // getDB returns a cached pool for the given database, creating and verifying it
 // on first use.
 func (e *ConnEntry) getDB(database string) (*sql.DB, error) {
+	network := "tcp"
+	if e.Info.SSH != nil && e.Info.SSH.Enabled {
+		n, err := e.tunnel.ensure(e.Info)
+		if err != nil {
+			return nil, err
+		}
+		network = n
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -81,7 +95,7 @@ func (e *ConnEntry) getDB(database string) (*sql.DB, error) {
 		delete(e.pools, database)
 	}
 
-	db, err := sql.Open("mysql", e.dsn(database))
+	db, err := sql.Open("mysql", e.dsn(database, network))
 	if err != nil {
 		return nil, err
 	}

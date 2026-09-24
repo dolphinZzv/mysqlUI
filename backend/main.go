@@ -1,30 +1,31 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
-	for _, arg := range os.Args[1:] {
-		if arg == "--version" || arg == "-version" || arg == "-v" {
-			fmt.Printf("mysqlui %s\n", version)
-			return
-		}
+	// `start`/`stop`/`status`/... are handled here; everything else serves.
+	if handleDaemonCommand(os.Args[1:]) {
+		return
 	}
+	runServer()
+}
 
-	dataDir := os.Getenv("MYSQLUI_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "data"
-	}
+func runServer() {
+	dir := dataDir()
 
-	store, err := NewStore(filepath.Join(dataDir, "connections.json"))
+	store, err := NewStore(filepath.Join(dir, "connections.json"))
 	if err != nil {
 		log.Fatalf("failed to init store: %v", err)
 	}
@@ -40,14 +41,30 @@ func main() {
 	// from disk (development). See web_embed.go / web_disk.go.
 	serveFrontend(mux)
 
-	addr := os.Getenv("MYSQLUI_ADDR")
-	if addr == "" {
-		addr = ":8787"
-	}
-
+	addr := listenAddr()
 	handler := corsMiddleware(loggingMiddleware(mux))
-	log.Printf("MySQL UI %s listening on %s", version, addr)
-	if err := http.ListenAndServe(addr, handler); err != nil {
-		log.Fatal(err)
+	httpServer := &http.Server{Addr: addr, Handler: handler}
+
+	go func() {
+		log.Printf("MySQL UI %s listening on %s", version, addr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	// Wait for a termination signal and shut down gracefully.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	log.Printf("shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = httpServer.Shutdown(ctx)
+
+	// Remove the pid file if we were launched as a daemon.
+	if os.Getenv("MYSQLUI_DAEMON") == "1" {
+		_ = os.Remove(pidFilePath())
 	}
+	log.Printf("stopped")
 }

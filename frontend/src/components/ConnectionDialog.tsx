@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, PlugZap, Save, Server } from "lucide-react";
+import { Loader2, Network, PlugZap, Save, Server } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Connection, ConnectionInput } from "@/lib/types";
+import type { Connection, ConnectionInput, SSHConfig } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -29,6 +31,18 @@ interface Props {
   onSaved: (connection: Connection) => void;
 }
 
+const defaultSSH: SSHConfig = {
+  enabled: false,
+  host: "",
+  port: 22,
+  user: "",
+  authMethod: "password",
+  password: "",
+  privateKey: "",
+  passphrase: "",
+  ignoreHostKey: true,
+};
+
 const emptyForm: ConnectionInput = {
   name: "",
   host: "127.0.0.1",
@@ -37,6 +51,7 @@ const emptyForm: ConnectionInput = {
   password: "",
   database: "",
   ssl: "disabled",
+  ssh: { ...defaultSSH },
 };
 
 export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Props) {
@@ -58,6 +73,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
               password: connection.password,
               database: connection.database || "",
               ssl: connection.ssl || "disabled",
+              ssh: { ...defaultSSH, ...(connection.ssh || {}) },
             }
           : emptyForm
       );
@@ -66,6 +82,9 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
 
   const set = <K extends keyof ConnectionInput>(key: K, value: ConnectionInput[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  const setSSH = <K extends keyof SSHConfig>(key: K, value: SSHConfig[K]) =>
+    setForm((f) => ({ ...f, ssh: { ...defaultSSH, ...(f.ssh || {}), [key]: value } }));
 
   const onTest = async () => {
     setTesting(true);
@@ -112,7 +131,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="scrollbar-thin max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Server className="h-4 w-4 text-primary" />
@@ -190,6 +209,113 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="rounded-lg border p-3">
+            <label className="flex cursor-pointer select-none items-center gap-2 text-sm font-medium">
+              <Checkbox
+                checked={form.ssh?.enabled ?? false}
+                onCheckedChange={(v) => setSSH("enabled", Boolean(v))}
+              />
+              <Network className="h-4 w-4 text-primary" />
+              Connect through an SSH tunnel
+            </label>
+
+            {form.ssh?.enabled && (
+              <div className="mt-3 grid gap-3 border-t pt-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2 grid gap-2">
+                    <Label htmlFor="ssh-host">SSH host</Label>
+                    <Input
+                      id="ssh-host"
+                      placeholder="bastion.example.com"
+                      value={form.ssh.host}
+                      onChange={(e) => setSSH("host", e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="ssh-port">SSH port</Label>
+                    <Input
+                      id="ssh-port"
+                      type="number"
+                      value={form.ssh.port}
+                      onChange={(e) => setSSH("port", Number(e.target.value) || 22)}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="ssh-user">SSH user</Label>
+                    <Input
+                      id="ssh-user"
+                      placeholder="deploy"
+                      value={form.ssh.user}
+                      onChange={(e) => setSSH("user", e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Authentication</Label>
+                    <Select
+                      value={form.ssh.authMethod}
+                      onValueChange={(v) => setSSH("authMethod", v as SSHConfig["authMethod"])}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="password">Password</SelectItem>
+                        <SelectItem value="key">Private key</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {form.ssh.authMethod === "password" ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="ssh-pass">SSH password</Label>
+                    <Input
+                      id="ssh-pass"
+                      type="password"
+                      value={form.ssh.password}
+                      onChange={(e) => setSSH("password", e.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-2">
+                      <Label htmlFor="ssh-key">Private key (PEM)</Label>
+                      <Textarea
+                        id="ssh-key"
+                        rows={4}
+                        spellCheck={false}
+                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                        className="font-mono text-[12px]"
+                        value={form.ssh.privateKey}
+                        onChange={(e) => setSSH("privateKey", e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="ssh-passphrase">Key passphrase (optional)</Label>
+                      <Input
+                        id="ssh-passphrase"
+                        type="password"
+                        value={form.ssh.passphrase}
+                        onChange={(e) => setSSH("passphrase", e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+
+                <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={form.ssh.ignoreHostKey}
+                    onCheckedChange={(v) => setSSH("ignoreHostKey", Boolean(v))}
+                  />
+                  Ignore host key verification (skip known_hosts check)
+                </label>
+              </div>
+            )}
           </div>
 
           {status && (
