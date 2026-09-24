@@ -1,0 +1,21 @@
+# Dependencies
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+frontend/*.tsbuildinfo
+backend/web/dist/
+backend/mysqlui
+dist/
+release/
+
+# Runtime data (stored connection profiles, including passwords)
+backend/data/
+data/
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
