@@ -23,7 +23,26 @@ shipped as a **single binary** with the UI embedded.
 - **SQL editor** — query console with line numbers, query history, `Ctrl/⌘+Enter`
   to run, and a result grid.
 - **Export** — download a table as CSV / JSON / SQL, or an entire database as SQL.
-- **UI** — multi-tab workspace, dark/light themes, keyboard-friendly.
+- **Import / restore** — load CSV into a table (with header mapping, truncate,
+  delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
+  understands comments, quotes and `DELIMITER` for routines).
+- **Server monitor** — overview metrics, live process list with kill / kill query,
+  and searchable status/variable tables.
+- **Users & privileges** — list users, `SHOW GRANTS`, create/alter/drop users and
+  grant/revoke privileges with a validated privilege allow-list.
+- **Routines & triggers** — browse procedures, functions, triggers and events,
+  view their `SHOW CREATE` definition and drop them.
+- **SQL editor** — syntax highlighting and schema-aware autocomplete
+  (`Ctrl/⌘+Enter` to run, `Ctrl+Space` to complete), query history and favorites.
+- **Query builder** — point-and-click column/condition/order builder.
+- **Global search** — find tables and columns across all databases (`Ctrl+K`).
+- **ER diagram** — visualize tables and foreign-key relationships.
+- **Schema diff** — compare two tables, see added/removed/changed columns and
+  indexes, and generate or execute the migration SQL.
+- **Smart cells** — view/edit large text/JSON, preview images/BLOBs, set NULL,
+  and jump along foreign keys.
+- **UI** — multi-tab workspace with session restore, dark/light themes,
+  English/Chinese interface.
 
 ## Install (one-click)
 
@@ -93,11 +112,39 @@ All configuration is via environment variables:
 | `MYSQLUI_DATA_DIR` | `data` | Directory holding `connections.json`. |
 | `MYSQLUI_PID_FILE` | `<data>/mysqlui.pid` | PID file used by the daemon commands. |
 | `MYSQLUI_LOG_FILE` | `<data>/mysqlui.log` | Log file for daemon mode. |
+| `MYSQLUI_AUTH_PASSWORD` | *(unset)* | When set, the UI/API requires this password to sign in. |
+| `MYSQLUI_AUTH_SECRET` | *(random)* | Secret used to sign session tokens (persisted to `<data>/auth.secret`). |
+| `MYSQLUI_TLS_CERT` | *(unset)* | TLS certificate file; enables HTTPS together with the key. |
+| `MYSQLUI_TLS_KEY` | *(unset)* | TLS private key file. |
 | `MYSQLUI_FRONTEND_DIR` | `../frontend/dist` | Frontend directory for non-embedded builds. |
+
+## Authentication & HTTPS
+
+Set a password to protect the tool (recommended before exposing it to a network):
+
+```bash
+MYSQLUI_AUTH_PASSWORD='change-me' MYSQLUI_TLS_CERT=cert.pem MYSQLUI_TLS_KEY=key.pem mysqlui start
+```
+
+Sessions use a signed, HttpOnly cookie valid for 7 days. All `/api/*` routes
+except `/api/auth/*`, `/api/version` and `/api/health` require authentication.
+
+When running behind a TLS-terminating proxy, leave `MYSQLUI_TLS_*` unset and let
+the proxy handle HTTPS.
+
+## Docker
+
+```bash
+docker build -t mysqlui .
+docker run -d --name mysqlui -p 8787:8787 -v mysqlui-data:/data mysqlui
+# or
+docker compose up -d
+```
 
 > **Security:** connection passwords (and SSH passwords / private keys) are
 > stored in plaintext in `$MYSQLUI_DATA_DIR/connections.json` (mode `0600`). This
-> tool is intended for local/trusted use. Do not expose it to the public internet.
+> tool is intended for local/trusted use. Set `MYSQLUI_AUTH_PASSWORD` before
+> exposing it to a network, and prefer HTTPS.
 
 ## SSH tunneling
 

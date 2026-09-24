@@ -12,7 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { FilterCondition, TableData, TableStructure } from "@/lib/types";
+import type { FilterCondition, ForeignKeyInfo, TableData, TableStructure } from "@/lib/types";
 import type { TableTabDef } from "@/lib/tabs";
 import { formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -40,16 +40,18 @@ import { StructureView } from "@/components/StructureView";
 import { AddRowDialog } from "@/components/AddRowDialog";
 import { FilterBar } from "@/components/FilterBar";
 import { ExportMenu } from "@/components/ExportMenu";
+import { CellViewer } from "@/components/CellViewer";
 
 interface Props {
   tab: TableTabDef;
   onRenamed: (newName: string) => void;
   onDropped: () => void;
+  onOpenRef?: (foreignKey: ForeignKeyInfo, value: unknown) => void;
 }
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000];
 
-export function TableTab({ tab, onRenamed, onDropped }: Props) {
+export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [view, setView] = useState<"data" | "structure">("data");
   const [structure, setStructure] = useState<TableStructure | null>(null);
   const [data, setData] = useState<TableData | null>(null);
@@ -61,6 +63,7 @@ export function TableTab({ tab, onRenamed, onDropped }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const [cellViewer, setCellViewer] = useState<{ open: boolean; rowIndex: number; column: string } | null>(null);
 
   const loadStructure = useCallback(async () => {
     try {
@@ -109,6 +112,17 @@ export function TableTab({ tab, onRenamed, onDropped }: Props) {
   useEffect(() => {
     void loadData(page, pageSize);
   }, [page, pageSize, loadData]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { table: string; column: string; value: unknown };
+      if (detail?.table !== tab.table) return;
+      setFilters([{ column: detail.column, op: "=", value: detail.value }]);
+      setPage(0);
+    };
+    window.addEventListener("mysqlui:applyFilter", handler);
+    return () => window.removeEventListener("mysqlui:applyFilter", handler);
+  }, [tab.table]);
 
   const total = data?.total ?? 0;
   const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
@@ -305,10 +319,13 @@ export function TableTab({ tab, onRenamed, onDropped }: Props) {
             rows={data.rows}
             columnsMeta={columnsMeta}
             primaryKey={data.primaryKey}
+            foreignKeys={structure?.foreignKeys ?? []}
             orderBy={orderBy}
             onSort={toggleSort}
             onUpdateCell={handleUpdateCell}
             onDeleteRow={(r) => setDeleteTarget(r)}
+            onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
+            onJump={(fk, value) => onOpenRef?.(fk, value)}
           />
         ) : (
           <Centered>
@@ -323,6 +340,23 @@ export function TableTab({ tab, onRenamed, onDropped }: Props) {
       </div>
 
       <AddRowDialog open={addOpen} onOpenChange={setAddOpen} columns={columnsMeta} onSubmit={handleInsert} />
+
+      {cellViewer && (
+        <CellViewer
+          open={cellViewer.open}
+          onOpenChange={(o) => !o && setCellViewer(null)}
+          connectionId={tab.connectionId}
+          database={tab.database}
+          table={tab.table}
+          column={cellViewer.column}
+          primaryKey={buildPrimaryKey(cellViewer.rowIndex)}
+          initialValue={data?.rows[cellViewer.rowIndex]?.[data.columns.indexOf(cellViewer.column)]}
+          editable
+          onSave={async (value) => {
+            await handleUpdateCell(cellViewer.rowIndex, cellViewer.column, value);
+          }}
+        />
+      )}
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>

@@ -13,9 +13,18 @@ import (
 
 type Server struct {
 	store *Store
+	auth  *authManager
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	// auth
+	mux.HandleFunc("GET /api/auth/status", s.auth.statusHandler)
+	mux.HandleFunc("POST /api/auth/login", s.auth.loginHandler)
+	mux.HandleFunc("POST /api/auth/logout", s.auth.logoutHandler)
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
+	})
+
 	mux.HandleFunc("GET /api/connections", s.listConnections)
 	mux.HandleFunc("POST /api/connections", s.createConnection)
 	mux.HandleFunc("PUT /api/connections/{id}", s.updateConnection)
@@ -26,6 +35,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/databases", s.listDatabases)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/export", s.exportDatabase)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables", s.listTables)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/schema", s.databaseSchema)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables", s.createTable)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/structure", s.tableStructure)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/data", s.tableData)
@@ -41,6 +51,48 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/rows", s.updateRow)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
+
+	// server monitor
+	mux.HandleFunc("GET /api/connections/{id}/monitor/processlist", s.monitorProcessList)
+	mux.HandleFunc("GET /api/connections/{id}/monitor/overview", s.monitorOverview)
+	mux.HandleFunc("GET /api/connections/{id}/monitor/status", s.monitorStatus)
+	mux.HandleFunc("GET /api/connections/{id}/monitor/variables", s.monitorVariables)
+	mux.HandleFunc("DELETE /api/connections/{id}/monitor/process/{pid}", s.monitorKill)
+
+	// import / backup
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import", s.importCSV)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/import/sql", s.importSQL)
+	mux.HandleFunc("POST /api/connections/{id}/import/sql", s.importSQL)
+	mux.HandleFunc("GET /api/connections/{id}/export", s.exportServer)
+
+	// cell preview
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/cell", s.cellValue)
+
+	// users & privileges
+	mux.HandleFunc("GET /api/connections/{id}/users", s.listUsers)
+	mux.HandleFunc("POST /api/connections/{id}/users", s.createUser)
+	mux.HandleFunc("PUT /api/connections/{id}/users/{host}/{user}", s.alterUser)
+	mux.HandleFunc("DELETE /api/connections/{id}/users/{host}/{user}", s.dropUser)
+	mux.HandleFunc("GET /api/connections/{id}/users/{host}/{user}/grants", s.userGrants)
+	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/grant", s.grantPrivileges)
+	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/revoke", s.revokePrivileges)
+
+	// stored routines, triggers, events
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/routines", s.listRoutines)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/routines/{kind}/{name}/definition", s.routineDefinition)
+	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/routines/{kind}/{name}", s.dropRoutine)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/triggers", s.listTriggers)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/triggers/{name}/definition", s.triggerDefinition)
+	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/triggers/{name}", s.dropTrigger)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/events", s.listEvents)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/events/{name}/definition", s.eventDefinition)
+	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/events/{name}", s.dropEvent)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/ddl", s.executeDDL)
+
+	// global search / ERD / schema diff
+	mux.HandleFunc("GET /api/connections/{id}/search", s.globalSearch)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/erd", s.erd)
+	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
 }
 
 // ---- connection CRUD ----------------------------------------------------
@@ -217,6 +269,19 @@ func (s *Server) db(w http.ResponseWriter, r *http.Request, entry *ConnEntry, da
 	return conn, true
 }
 
+// connDB returns a pool for the connection's default database (or no database).
+func (s *Server) connDB(w http.ResponseWriter, r *http.Request) (*ConnEntry, *sql.DB, bool) {
+	entry, ok := s.entry(w, r)
+	if !ok {
+		return nil, nil, false
+	}
+	db, ok := s.db(w, r, entry, "")
+	if !ok {
+		return nil, nil, false
+	}
+	return entry, db, true
+}
+
 func (s *Server) params(w http.ResponseWriter, r *http.Request) (entry *ConnEntry, db *sql.DB, dbName, table string, ok bool) {
 	entry, ok = s.entry(w, r)
 	if !ok {
@@ -351,14 +416,23 @@ type indexInfo struct {
 	IndexType   string `json:"indexType"`
 }
 
+type foreignKeyInfo struct {
+	Column      string `json:"column"`
+	RefDatabase string `json:"refDatabase"`
+	RefTable    string `json:"refTable"`
+	RefColumn   string `json:"refColumn"`
+	Constraint  string `json:"constraint"`
+}
+
 type tableStructureResponse struct {
-	Name      string       `json:"name"`
-	Type      string       `json:"type"`
-	Engine    string       `json:"engine"`
-	Comment   string       `json:"comment"`
-	Columns   []columnInfo `json:"columns"`
-	Indexes   []indexInfo  `json:"indexes"`
-	CreateSQL string       `json:"createSql"`
+	Name        string           `json:"name"`
+	Type        string           `json:"type"`
+	Engine      string           `json:"engine"`
+	Comment     string           `json:"comment"`
+	Columns     []columnInfo     `json:"columns"`
+	Indexes     []indexInfo      `json:"indexes"`
+	ForeignKeys []foreignKeyInfo `json:"foreignKeys"`
+	CreateSQL   string           `json:"createSql"`
 }
 
 func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
@@ -368,7 +442,7 @@ func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	resp := tableStructureResponse{Name: table, Columns: []columnInfo{}, Indexes: []indexInfo{}}
+	resp := tableStructureResponse{Name: table, Columns: []columnInfo{}, Indexes: []indexInfo{}, ForeignKeys: []foreignKeyInfo{}}
 
 	var tableType, engine, comment sql.NullString
 	err := db.QueryRowContext(ctx, `
@@ -445,6 +519,21 @@ func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
 				idx.Cardinality = &card
 			}
 			resp.Indexes = append(resp.Indexes, idx)
+		}
+	}
+
+	fkRows, err := db.QueryContext(ctx, `
+		SELECT COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
+		FROM information_schema.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, dbName, table)
+	if err == nil {
+		defer fkRows.Close()
+		for fkRows.Next() {
+			var fk foreignKeyInfo
+			if err := fkRows.Scan(&fk.Column, &fk.RefDatabase, &fk.RefTable, &fk.RefColumn, &fk.Constraint); err == nil {
+				resp.ForeignKeys = append(resp.ForeignKeys, fk)
+			}
 		}
 	}
 

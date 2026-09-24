@@ -1,19 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Key, Loader2, Trash2 } from "lucide-react";
-import type { ColumnInfo } from "@/lib/types";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
+  Copy,
+  Eye,
+  Key,
+  Link2,
+  Loader2,
+  Pencil,
+  Trash2,
+} from "lucide-react";
+import { toast } from "sonner";
+import type { ColumnInfo, ForeignKeyInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { CellValue } from "@/components/CellValue";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 interface Props {
   columns: string[];
   rows: unknown[][];
   columnsMeta: ColumnInfo[];
   primaryKey: string[];
+  foreignKeys?: ForeignKeyInfo[];
   orderBy?: string;
   onSort?: (column: string) => void;
   onUpdateCell: (rowIndex: number, column: string, value: unknown) => Promise<void>;
   onDeleteRow: (rowIndex: number) => void;
+  onViewCell?: (rowIndex: number, column: string) => void;
+  onJump?: (foreignKey: ForeignKeyInfo, value: unknown) => void;
 }
 
 interface Editing {
@@ -26,10 +48,13 @@ export function DataGrid({
   rows,
   columnsMeta,
   primaryKey,
+  foreignKeys = [],
   orderBy,
   onSort,
   onUpdateCell,
   onDeleteRow,
+  onViewCell,
+  onJump,
 }: Props) {
   const [editing, setEditing] = useState<Editing | null>(null);
   const [draft, setDraft] = useState("");
@@ -41,6 +66,12 @@ export function DataGrid({
     columnsMeta.forEach((c) => m.set(c.name, c));
     return m;
   }, [columnsMeta]);
+
+  const fkByName = useMemo(() => {
+    const m = new Map<string, ForeignKeyInfo>();
+    foreignKeys.forEach((fk) => m.set(fk.column, fk));
+    return m;
+  }, [foreignKeys]);
 
   useEffect(() => {
     if (editing) {
@@ -74,7 +105,7 @@ export function DataGrid({
     try {
       await onUpdateCell(r, column, value);
     } catch {
-      // parent surfaces the error via toast
+      /* parent surfaces the error */
     } finally {
       setSaving((prev) => {
         const next = new Set(prev);
@@ -83,8 +114,6 @@ export function DataGrid({
       });
     }
   };
-
-  const cancel = () => setEditing(null);
 
   return (
     <div className="scrollbar-thin relative h-full overflow-auto">
@@ -97,6 +126,7 @@ export function DataGrid({
             {columns.map((col) => {
               const meta = metaByName.get(col);
               const isPk = primaryKey.includes(col);
+              const isFk = fkByName.has(col);
               const sortDir = orderBy === col ? "asc" : orderBy === `-${col}` ? "desc" : null;
               return (
                 <th
@@ -109,6 +139,7 @@ export function DataGrid({
                 >
                   <div className="flex items-center gap-1.5">
                     {isPk && <Key className="h-3 w-3 text-amber-500" />}
+                    {isFk && !isPk && <Link2 className="h-3 w-3 text-sky-400" />}
                     <span className="truncate">{col}</span>
                     {sortDir === "asc" ? (
                       <ArrowUp className="h-3 w-3 shrink-0 text-primary" />
@@ -146,47 +177,79 @@ export function DataGrid({
                 const isEditing = editing?.r === r && editing?.c === c;
                 const isSaving = saving.has(`${r}:${c}`);
                 const numeric = typeof cell === "number";
+                const fk = fkByName.get(col);
+                const meta = metaByName.get(col);
                 return (
-                  <td
-                    key={c}
-                    className={cn(
-                      "max-w-[420px] border-b border-r px-3 py-1 align-top",
-                      numeric && "text-right tabular-nums",
-                      !isEditing && "cursor-cell"
-                    )}
-                    onDoubleClick={() => !isEditing && beginEdit(r, c)}
-                    title={isEditing ? undefined : cell === null ? "NULL" : String(cell)}
-                  >
-                    {isEditing ? (
-                      <input
-                        ref={inputRef}
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onBlur={commit}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void commit();
-                          } else if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancel();
-                          } else if (e.key === "Tab") {
-                            e.preventDefault();
-                            void commit();
-                          }
-                        }}
+                  <ContextMenu key={c}>
+                    <ContextMenuTrigger asChild>
+                      <td
                         className={cn(
-                          "w-full min-w-[80px] rounded border border-primary bg-background px-1.5 py-0.5 text-[13px] outline-none",
-                          numeric && "text-right"
+                          "max-w-[420px] border-b border-r px-3 py-1 align-top",
+                          numeric && "text-right tabular-nums",
+                          !isEditing && "cursor-cell"
                         )}
-                      />
-                    ) : (
-                      <div className="flex items-center gap-1">
-                        <CellValue value={cell} />
-                        {isSaving && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />}
-                      </div>
-                    )}
-                  </td>
+                        onDoubleClick={() => !isEditing && beginEdit(r, c)}
+                        title={isEditing ? undefined : cell === null ? "NULL" : String(cell)}
+                      >
+                        {isEditing ? (
+                          <input
+                            ref={inputRef}
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onBlur={commit}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === "Tab") {
+                                e.preventDefault();
+                                void commit();
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                setEditing(null);
+                              }
+                            }}
+                            className={cn(
+                              "w-full min-w-[80px] rounded border border-primary bg-background px-1.5 py-0.5 text-[13px] outline-none",
+                              numeric && "text-right"
+                            )}
+                          />
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <CellValue value={cell} />
+                            {isSaving && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />}
+                          </div>
+                        )}
+                      </td>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => beginEdit(r, c)}>
+                        <Pencil /> Edit
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => onViewCell?.(r, col)}>
+                        <Eye /> View content
+                      </ContextMenuItem>
+                      {fk && cell !== null && cell !== undefined && (
+                        <ContextMenuItem onClick={() => onJump?.(fk, cell)}>
+                          <Link2 /> Go to {fk.refTable}.{fk.refColumn}
+                        </ContextMenuItem>
+                      )}
+                      <ContextMenuSeparator />
+                      <ContextMenuItem
+                        disabled={!meta?.nullable}
+                        onClick={() =>
+                          void onUpdateCell(r, col, null).catch(() => {})
+                        }
+                      >
+                        Set NULL
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        onClick={() => {
+                          const text = cell === null || cell === undefined ? "NULL" : String(cell);
+                          void navigator.clipboard.writeText(text).then(() => toast.success("Copied"));
+                        }}
+                      >
+                        <Copy /> Copy value
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
                 );
               })}
               <td className="sticky right-0 z-10 border-b border-l bg-card px-1 py-1 text-center group-hover:bg-muted">
@@ -202,10 +265,7 @@ export function DataGrid({
           ))}
           {rows.length === 0 && (
             <tr>
-              <td
-                colSpan={columns.length + 2}
-                className="px-3 py-10 text-center text-sm text-muted-foreground"
-              >
+              <td colSpan={columns.length + 2} className="px-3 py-10 text-center text-sm text-muted-foreground">
                 No rows in this table.
               </td>
             </tr>

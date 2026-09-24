@@ -52,6 +52,14 @@ test: ## Run Go tests and frontend typecheck
 	cd $(BACKEND) && go vet ./... && go test ./...
 	cd $(FRONTEND) && npm run typecheck
 
+.PHONY: docker
+docker: ## Build the Docker image
+	docker build -t mysqlui:latest .
+
+.PHONY: docker-run
+docker-run: ## Run the Docker image
+	docker run --rm -p 8787:8787 -v mysqlui-data:/data -e MYSQLUI_DATA_DIR=/data mysqlui:latest
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	rm -rf $(DIST) $(BACKEND)/web/dist $(FRONTEND)/dist $(FRONTEND)/*.tsbuildinfo

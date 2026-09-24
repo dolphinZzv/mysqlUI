@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  Activity,
   AlertCircle,
+  Braces,
   ChevronRight,
   Copy,
   Database as DatabaseIcon,
   Download,
   Eye,
+  GitCompare,
   Loader2,
   MoreVertical,
   Network,
@@ -15,13 +18,17 @@ import {
   RefreshCw,
   Search,
   Server,
+  Share2,
   Table2,
   Terminal,
   Trash2,
   Unplug,
+  Upload,
+  Users,
 } from "lucide-react";
-import { api, databaseExportUrl, triggerDownload } from "@/lib/api";
+import { api, databaseExportUrl, serverExportUrl, triggerDownload } from "@/lib/api";
 import type { Connection, CreateTableRequest, DatabaseInfo, TableInfo } from "@/lib/types";
+import type { GenericTabKind } from "@/lib/tabs";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,6 +63,9 @@ interface Props {
   connections: Connection[];
   onOpenTable: (connection: Connection, database: string, table: string) => void;
   onNewQuery: (connection: Connection, database?: string) => void;
+  onOpenGeneric: (kind: GenericTabKind, connection: Connection, database?: string) => void;
+  onImport: (connection: Connection, database: string | null, table: string | null) => void;
+  onBackup: (connection: Connection, database: string | null) => void;
   onEdit: (connection: Connection) => void;
   onDelete: (connection: Connection) => void;
   onNewConnection: () => void;
@@ -67,6 +77,9 @@ export function Sidebar({
   connections,
   onOpenTable,
   onNewQuery,
+  onOpenGeneric,
+  onImport,
+  onBackup,
   onEdit,
   onDelete,
   onNewConnection,
@@ -298,6 +311,12 @@ export function Sidebar({
                         <DropdownMenuItem onClick={() => onNewQuery(conn)}>
                           <Terminal /> New query
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onOpenGeneric("monitor", conn)}>
+                          <Activity /> Monitor
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onOpenGeneric("users", conn)}>
+                          <Users /> Users
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => refreshConnection(conn)}>
                           <RefreshCw /> Refresh
                         </DropdownMenuItem>
@@ -333,8 +352,21 @@ export function Sidebar({
                   <ContextMenuItem onClick={() => onNewQuery(conn)}>
                     <Terminal /> New query
                   </ContextMenuItem>
+                  <ContextMenuItem onClick={() => onOpenGeneric("monitor", conn)}>
+                    <Activity /> Monitor
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => onOpenGeneric("users", conn)}>
+                    <Users /> Users
+                  </ContextMenuItem>
                   <ContextMenuItem onClick={() => refreshConnection(conn)}>
                     <RefreshCw /> Refresh
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onClick={() => onBackup(conn, null)}>
+                    <Download /> Backup server (SQL)
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => onImport(conn, null, null)}>
+                    <Upload /> Restore SQL
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem onClick={() => onEdit(conn)}>
@@ -413,14 +445,28 @@ export function Sidebar({
                                 <RefreshCw /> Refresh tables
                               </ContextMenuItem>
                               <ContextMenuSeparator />
+                              <ContextMenuItem onClick={() => onOpenGeneric("routines", conn, db.name)}>
+                                <Braces /> Routines / triggers
+                              </ContextMenuItem>
+                              <ContextMenuItem onClick={() => onOpenGeneric("erd", conn, db.name)}>
+                                <Share2 /> ER diagram
+                              </ContextMenuItem>
+                              <ContextMenuItem onClick={() => onOpenGeneric("diff", conn, db.name)}>
+                                <GitCompare /> Schema diff
+                              </ContextMenuItem>
+                              <ContextMenuSeparator />
                               <ContextMenuItem
                                 onClick={() => {
                                   triggerDownload(databaseExportUrl(conn.id, db.name, "sql"));
                                   toast.success(`Exporting ${db.name}.sql`);
                                 }}
                               >
-                                <Download /> Export SQL
+                                <Download /> Backup (SQL)
                               </ContextMenuItem>
+                              <ContextMenuItem onClick={() => onImport(conn, db.name, null)}>
+                                <Upload /> Import / restore SQL
+                              </ContextMenuItem>
+                              <ContextMenuSeparator />
                               <ContextMenuItem onClick={() => copy(db.name, "Database name copied")}>
                                 <Copy /> Copy name
                               </ContextMenuItem>
@@ -464,6 +510,9 @@ export function Sidebar({
                                         onClick={() => onOpenTable(conn, db.name, table.name)}
                                       >
                                         <Table2 /> Open table
+                                      </ContextMenuItem>
+                                      <ContextMenuItem onClick={() => onImport(conn, db.name, table.name)}>
+                                        <Upload /> Import CSV
                                       </ContextMenuItem>
                                       <ContextMenuItem onClick={() => copy(table.name, "Table name copied")}>
                                         <Copy /> Copy name

@@ -30,7 +30,8 @@ func runServer() {
 		log.Fatalf("failed to init store: %v", err)
 	}
 
-	srv := &Server{store: store}
+	auth := newAuthManager(dir)
+	srv := &Server{store: store, auth: auth}
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -42,12 +43,31 @@ func runServer() {
 	serveFrontend(mux)
 
 	addr := listenAddr()
-	handler := corsMiddleware(loggingMiddleware(mux))
+	handler := auth.middleware(corsMiddleware(loggingMiddleware(mux)))
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 
+	tlsCert := os.Getenv("MYSQLUI_TLS_CERT")
+	tlsKey := os.Getenv("MYSQLUI_TLS_KEY")
+	useTLS := tlsCert != "" && tlsKey != ""
+
 	go func() {
-		log.Printf("MySQL UI %s listening on %s", version, addr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		scheme := "http"
+		if useTLS {
+			scheme = "https"
+		}
+		log.Printf("MySQL UI %s listening on %s (%s)", version, addr, scheme)
+		if auth.enabled {
+			log.Printf("authentication is enabled")
+		} else {
+			log.Printf("authentication is disabled (set MYSQLUI_AUTH_PASSWORD to enable)")
+		}
+		var err error
+		if useTLS {
+			err = httpServer.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			err = httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()

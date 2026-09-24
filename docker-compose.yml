@@ -1,0 +1,18 @@
+services:
+  mysqlui:
+    build: .
+    image: mysqlui:latest
+    container_name: mysqlui
+    ports:
+      - "8787:8787"
+    volumes:
+      - mysqlui-data:/data
+    environment:
+      # Set a password to require login (leave unset for open local access)
+      # MYSQLUI_AUTH_PASSWORD: change-me
+      MYSQLUI_DATA_DIR: /data
+      MYSQLUI_ADDR: ":8787"
+    restart: unless-stopped
+
+volumes:
+  mysqlui-data:

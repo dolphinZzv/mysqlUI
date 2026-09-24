@@ -1,0 +1,11 @@
+**/node_modules
+frontend/dist
+backend/web/dist
+backend/mysqlui
+dist
+release
+.git
+.github
+data
+backend/data
+*.log
