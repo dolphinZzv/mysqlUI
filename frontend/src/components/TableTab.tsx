@@ -94,7 +94,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           orderBy,
           filters
         );
-        setData(res);
+        setData({ ...res, primaryKey: res.primaryKey ?? [] });
         setSelected(new Set());
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

@@ -626,10 +626,10 @@ func primaryKeyColumns(ctx context.Context, db *sql.DB, schema, table string) []
 		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
 		ORDER BY ORDINAL_POSITION`, schema, table)
 	if err != nil {
-		return nil
+		return []string{}
 	}
 	defer rows.Close()
-	var cols []string
+	cols := []string{}
 	for rows.Next() {
 		var c string
 		if err := rows.Scan(&c); err == nil {

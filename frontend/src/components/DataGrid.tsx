@@ -223,7 +223,7 @@ export function DataGrid({
             </th>
             {columns.map((col) => {
               const meta = metaByName.get(col);
-              const isPk = primaryKey.includes(col);
+              const isPk = (primaryKey ?? []).includes(col);
               const isFk = fkByName.has(col);
               const sortDir = orderBy === col ? "asc" : orderBy === `-${col}` ? "desc" : null;
               return (
