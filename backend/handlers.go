@@ -12,8 +12,9 @@ import (
 )
 
 type Server struct {
-	store *Store
-	auth  *authManager
+	store    *Store
+	versions *SchemaVersionStore
+	auth     *authManager
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -26,6 +27,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /api/connections", s.listConnections)
+	mux.HandleFunc("GET /api/connections/{id}", s.getConnection)
 	mux.HandleFunc("POST /api/connections", s.createConnection)
 	mux.HandleFunc("PUT /api/connections/{id}", s.updateConnection)
 	mux.HandleFunc("DELETE /api/connections/{id}", s.deleteConnection)
@@ -42,6 +44,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/export", s.exportTable)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}", s.dropTable)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rename", s.renameTable)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/copy", s.copyTable)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/columns", s.addColumn)
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/columns/{column}", s.modifyColumn)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/columns/{column}", s.dropColumn)
@@ -50,6 +53,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows", s.insertRow)
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/rows", s.updateRow)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-delete", s.deleteRows)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
 
 	// server monitor
@@ -93,20 +97,29 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/search", s.globalSearch)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/erd", s.erd)
 	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
+
+	// schema versions (snapshots / 封板)
+	mux.HandleFunc("GET /api/connections/{id}/schema-versions", s.listSchemaVersions)
+	mux.HandleFunc("POST /api/connections/{id}/schema-versions", s.createSchemaVersion)
+	mux.HandleFunc("POST /api/connections/{id}/schema-versions/diff", s.diffSchemaVersions)
+	mux.HandleFunc("GET /api/connections/{id}/schema-versions/{versionId}", s.getSchemaVersion)
+	mux.HandleFunc("DELETE /api/connections/{id}/schema-versions/{versionId}", s.deleteSchemaVersion)
 }
 
 // ---- connection CRUD ----------------------------------------------------
 
 type connectionInput struct {
-	Name     string     `json:"name"`
-	Host     string     `json:"host"`
-	Port     int        `json:"port"`
-	User     string     `json:"user"`
-	Password string     `json:"password"`
-	Database string     `json:"database"`
-	SSL      string     `json:"ssl"`
-	Color    string     `json:"color"`
-	SSH      *SSHConfig `json:"ssh"`
+	Name                string     `json:"name"`
+	Host                string     `json:"host"`
+	Port                int        `json:"port"`
+	User                string     `json:"user"`
+	Password            string     `json:"password"`
+	Database            string     `json:"database"`
+	SSL                 string     `json:"ssl"`
+	Color               string     `json:"color"`
+	ReadOnly            bool       `json:"readOnly"`
+	HideSystemDatabases bool       `json:"hideSystemDatabases"`
+	SSH                 *SSHConfig `json:"ssh"`
 }
 
 func (in connectionInput) toConnection() Connection {
@@ -114,15 +127,17 @@ func (in connectionInput) toConnection() Connection {
 		in.Port = 3306
 	}
 	return Connection{
-		Name:     in.Name,
-		Host:     in.Host,
-		Port:     in.Port,
-		User:     in.User,
-		Password: in.Password,
-		Database: in.Database,
-		SSL:      in.SSL,
-		Color:    in.Color,
-		SSH:      in.SSH,
+		Name:                in.Name,
+		Host:                in.Host,
+		Port:                in.Port,
+		User:                in.User,
+		Password:            in.Password,
+		Database:            in.Database,
+		SSL:                 in.SSL,
+		Color:               in.Color,
+		ReadOnly:            in.ReadOnly,
+		HideSystemDatabases: in.HideSystemDatabases,
+		SSH:                 in.SSH,
 	}
 }
 
@@ -151,7 +166,23 @@ func (in connectionInput) validate() error {
 }
 
 func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.List())
+	list := s.store.List()
+	out := make([]Connection, len(list))
+	for i, c := range list {
+		out[i] = redactConnection(c)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// getConnection returns the full connection (including secrets) so the edit
+// dialog can prefill credentials. It is only reachable behind authentication.
+func (s *Server) getConnection(w http.ResponseWriter, r *http.Request) {
+	entry, err := s.store.Get(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entry.Info)
 }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
@@ -339,6 +370,7 @@ func (s *Server) listDatabases(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	hideSystem := entry.Info.HideSystemDatabases && r.URL.Query().Get("all") != "1"
 	out := make([]databaseInfo, 0)
 	for rows.Next() {
 		var d databaseInfo
@@ -347,6 +379,9 @@ func (s *Server) listDatabases(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d.IsSystem = systemSchemas[strings.ToLower(d.Name)]
+		if d.IsSystem && hideSystem {
+			continue
+		}
 		out = append(out, d)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -697,6 +732,9 @@ type rowWriteRequest struct {
 }
 
 func (s *Server) insertRow(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok {
 		return
@@ -735,6 +773,9 @@ func (s *Server) insertRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateRow(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok {
 		return
@@ -782,6 +823,9 @@ func (s *Server) updateRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteRow(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok {
 		return
@@ -807,6 +851,67 @@ func (s *Server) deleteRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	affected, _ := res.RowsAffected()
+	writeJSON(w, http.StatusOK, map[string]any{"affected": affected})
+}
+
+type bulkDeleteRequest struct {
+	Keys []map[string]any `json:"keys"`
+}
+
+// deleteRows removes several rows by primary key in a single transaction. The
+// whole batch is rolled back if any statement fails.
+func (s *Server) deleteRows(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
+	_, db, dbName, table, ok := s.params(w, r)
+	if !ok {
+		return
+	}
+	var in bulkDeleteRequest
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if len(in.Keys) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("keys is required"))
+		return
+	}
+	if len(in.Keys) > 1000 {
+		writeErr(w, http.StatusBadRequest, errors.New("too many rows in one request (max 1000)"))
+		return
+	}
+
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var affected int64
+	for _, key := range in.Keys {
+		if len(key) == 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("primaryKey is required to delete a row"))
+			return
+		}
+		where, vals, err := buildWhere(key)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		res, err := tx.ExecContext(r.Context(), fmt.Sprintf("DELETE FROM %s WHERE %s", qualify(dbName, table), where), vals...)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		n, _ := res.RowsAffected()
+		affected += n
+	}
+	if err := tx.Commit(); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"affected": affected})
 }
 
@@ -877,6 +982,10 @@ func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 	sqlText := strings.TrimSpace(in.SQL)
 	if sqlText == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("sql is required"))
+		return
+	}
+	if s.isReadOnly(r) && !isQueryStatement(sqlText) {
+		writeErr(w, http.StatusForbidden, errReadOnly)
 		return
 	}
 	db, ok := s.db(w, r, entry, in.Database)

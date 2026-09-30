@@ -9,17 +9,33 @@ shipped as a **single binary** with the UI embedded.
 ## Features
 
 - **Connections** — create / edit / delete / test MySQL servers, with SSL modes.
-  Profiles persist to a local JSON file.
+  Profiles persist to a local JSON file. Each connection can be flagged
+  **read-only** (enforced server-side for every write endpoint) and
+  **hide system databases** (`information_schema`, `performance_schema`,
+  `mysql`, `sys`) from database pickers.
+- **Encrypted secrets** — database passwords and SSH credentials are encrypted at
+  rest with AES-256-GCM; the master key lives in `<data>/secret.key` (or
+  `MYSQLUI_SECRET_KEY`). Existing plaintext stores are migrated on first load,
+  and secrets are stripped from connection-list responses.
 - **MySQL over SSH** — reach databases behind a bastion host using password or
   private-key (with optional passphrase) authentication, with host-key
   verification against `~/.ssh/known_hosts` (or an opt-out).
 - **Schema explorer** — sidebar tree of connections → databases → tables, with
   search, lazy loading and right-click actions.
 - **Data browser** — paginated grid with inline cell editing, insert row dialog,
-  delete rows, column sorting and multi-condition filtering.
+  delete rows, column sorting and multi-condition filtering. Drag across rows to
+  select a range (Shift extends, Cmd/Ctrl adds) and delete them in one
+  transaction.
+- **Charts** — turn any query result into a bar / line / area / pie chart with a
+  dependency-free SVG renderer, choosing the X axis, value fields and
+  count / sum / avg / min / max aggregation.
+- **Execution plan** — run `EXPLAIN FORMAT=JSON` for the current query and inspect
+  the cost and access path per table, with the raw plan as highlighted JSON.
 - **Structure viewer** — columns, indexes, cardinality and the full `CREATE TABLE`.
 - **Table designer** — create tables, add/modify/drop columns, add/drop indexes,
   rename and drop tables.
+- **Copy / migrate a table** — duplicate a table's structure and data into the same
+  or another database on the same server, optionally dropping the target first.
 - **SQL editor** — query console with line numbers, query history, `Ctrl/⌘+Enter`
   to run, and a result grid.
 - **Export** — download a table as CSV / JSON / SQL, or an entire database as SQL.
@@ -39,10 +55,15 @@ shipped as a **single binary** with the UI embedded.
 - **ER diagram** — visualize tables and foreign-key relationships.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
   indexes, and generate or execute the migration SQL.
+- **Schema versioning** — "seal" (封板) a snapshot of a whole database's
+  structure, browse the version list, and diff any two versions — or a version
+  against the live database — with generated migration SQL that can be copied or
+  applied. Snapshots persist to `<data>/schema-versions.json`.
 - **Smart cells** — view/edit large text/JSON, preview images/BLOBs, set NULL,
   and jump along foreign keys.
 - **UI** — multi-tab workspace with session restore, dark/light themes,
-  English/Chinese interface.
+  English/Chinese interface, a resizable sidebar and JSON syntax highlighting in
+  the cell viewer.
 
 ## Install (one-click)
 
@@ -113,9 +134,11 @@ All configuration is via environment variables:
 | `MYSQLUI_PID_FILE` | `<data>/mysqlui.pid` | PID file used by the daemon commands. |
 | `MYSQLUI_LOG_FILE` | `<data>/mysqlui.log` | Log file for daemon mode. |
 | `MYSQLUI_AUTH_PASSWORD` | *(unset)* | When set, the UI/API requires this password to sign in. |
+| `MYSQLUI_TOTP_SECRET` | *(unset)* | Base32 TOTP secret (RFC 6238). When set, sign-in also requires a rotating 6-digit code. |
 | `MYSQLUI_AUTH_SECRET` | *(random)* | Secret used to sign session tokens (persisted to `<data>/auth.secret`). |
 | `MYSQLUI_TLS_CERT` | *(unset)* | TLS certificate file; enables HTTPS together with the key. |
 | `MYSQLUI_TLS_KEY` | *(unset)* | TLS private key file. |
+| `MYSQLUI_SECRET_KEY` | `<data>/secret.key` | 32-byte master key (hex or base64) used to encrypt connection secrets at rest. Generated automatically on first run. |
 | `MYSQLUI_FRONTEND_DIR` | `../frontend/dist` | Frontend directory for non-embedded builds. |
 
 ## Authentication & HTTPS
@@ -129,6 +152,21 @@ MYSQLUI_AUTH_PASSWORD='change-me' MYSQLUI_TLS_CERT=cert.pem MYSQLUI_TLS_KEY=key.
 Sessions use a signed, HttpOnly cookie valid for 7 days. All `/api/*` routes
 except `/api/auth/*`, `/api/version` and `/api/health` require authentication.
 
+### Two-factor authentication
+
+Set `MYSQLUI_TOTP_SECRET` to a base32-encoded TOTP secret (RFC 6238, SHA-1,
+30-second period, 6 digits) to require a one-time code in addition to the
+password. Generate one with any authenticator app or `openssl`, for example:
+
+```bash
+MYSQLUI_AUTH_PASSWORD='change-me' \
+MYSQLUI_TOTP_SECRET="$(head -c 20 /dev/urandom | base32 | tr -d '=')" \
+mysqlui start
+```
+
+Add the secret to Google Authenticator / 1Password / Authy, then sign in with the
+password plus the current 6-digit code.
+
 When running behind a TLS-terminating proxy, leave `MYSQLUI_TLS_*` unset and let
 the proxy handle HTTPS.
 
@@ -141,10 +179,15 @@ docker run -d --name mysqlui -p 8787:8787 -v mysqlui-data:/data mysqlui
 docker compose up -d
 ```
 
-> **Security:** connection passwords (and SSH passwords / private keys) are
-> stored in plaintext in `$MYSQLUI_DATA_DIR/connections.json` (mode `0600`). This
-> tool is intended for local/trusted use. Set `MYSQLUI_AUTH_PASSWORD` before
-> exposing it to a network, and prefer HTTPS.
+> **Security:** database passwords and SSH credentials (passwords / private
+> keys) are encrypted at rest in `$MYSQLUI_DATA_DIR/connections.json` with
+> AES-256-GCM. The master key is stored in `$MYSQLUI_DATA_DIR/secret.key` (mode
+> `0600`) or supplied via `MYSQLUI_SECRET_KEY`. Connection-list responses are
+> redacted; the full record is only returned by `GET /api/connections/{id}`.
+> This tool is intended for local/trusted use — set `MYSQLUI_AUTH_PASSWORD`
+> before exposing it to a network, and prefer HTTPS. Back up `secret.key`
+> together with `connections.json`: without it, the stored secrets cannot be
+> recovered.
 
 ## SSH tunneling
 
@@ -264,6 +307,10 @@ cd frontend && npm install && npm run dev
 │   ├── daemon_windows.go  # //go:build windows — detached process
 │   ├── store.go           # connection store + per-database pools
 │   ├── ssh.go             # SSH tunnel (jump host) support
+│   ├── crypto.go          # AES-256-GCM encryption of stored secrets
+│   ├── schemadiff.go      # table-to-table schema diff
+│   ├── schemaversion.go   # schema snapshots (封板) + version diff
+│   ├── totp.go            # RFC 6238 two-factor authentication
 │   ├── handlers.go        # connections, schema, rows, query
 │   ├── tableops.go        # filters, export, table designer (DDL), server info
 │   ├── helpers.go         # JSON, identifiers, middleware, SPA handler
@@ -297,22 +344,28 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET/POST` | `/api/connections` | list / create connections |
+| `GET/POST` | `/api/connections` | list (redacted) / create connections |
+| `GET` | `/api/connections/{id}` | full connection incl. secrets (for editing) |
 | `PUT/DELETE` | `/api/connections/{id}` | update / delete |
 | `POST` | `/api/connections/test` | test a connection |
 | `POST` | `/api/connections/{id}/test` | test a saved connection |
 | `GET` | `/api/connections/{id}/info` | server version/host info |
-| `GET` | `/api/connections/{id}/databases` | list databases |
+| `GET` | `/api/connections/{id}/databases` | list databases (add `?all=1` to include hidden system databases) |
 | `GET` | `/api/connections/{id}/databases/{db}/tables` | list tables |
 | `POST` | `/api/connections/{id}/databases/{db}/tables` | create table |
 | `GET` | `…/tables/{table}/structure` | table structure |
 | `GET` | `…/tables/{table}/data` | paginated rows (`limit`, `offset`, `orderBy`, `filters`) |
 | `POST/PUT/DELETE` | `…/tables/{table}/rows` | insert / update / delete rows |
+| `POST` | `…/tables/{table}/rows/bulk-delete` | delete several rows by primary key in one transaction |
 | `POST/PUT/DELETE` | `…/tables/{table}/columns[/{col}]` | add / modify / drop column |
 | `POST/DELETE` | `…/tables/{table}/indexes[/{idx}]` | add / drop index |
+| `POST` | `…/tables/{table}/copy` | copy table structure/data to another database |
 | `GET` | `…/tables/{table}/export?format=csv\|json\|sql` | export table |
 | `GET` | `…/databases/{db}/export?format=sql` | export database |
 | `POST` | `/api/connections/{id}/query` | run arbitrary SQL |
+| `GET/POST` | `/api/connections/{id}/schema-versions` | list / seal schema snapshots |
+| `GET/DELETE` | `/api/connections/{id}/schema-versions/{versionId}` | get / delete a snapshot |
+| `POST` | `/api/connections/{id}/schema-versions/diff` | diff two versions or a version vs live |
 
 ## License
 

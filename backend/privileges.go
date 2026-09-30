@@ -126,6 +126,9 @@ func (s *Server) userGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return
@@ -156,6 +159,9 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) alterUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return
@@ -184,6 +190,9 @@ func (s *Server) alterUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dropUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return
@@ -201,6 +210,9 @@ func (s *Server) dropUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) grantPrivileges(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return
@@ -242,6 +254,9 @@ func (s *Server) grantPrivileges(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) revokePrivileges(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return

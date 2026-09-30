@@ -231,6 +231,9 @@ func (s *Server) dropDefinition(w http.ResponseWriter, r *http.Request, kind, na
 // executeDDL runs a user supplied DDL/DML statement (used to create routines,
 // triggers, events, views, ...).
 func (s *Server) executeDDL(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, _, _, ok := s.params(w, r)
 	if !ok {
 		return

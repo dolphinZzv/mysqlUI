@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Network, PlugZap, Save, Server } from "lucide-react";
+import { Loader2, Network, PlugZap, Save, Server, ShieldCheck, EyeOff } from "lucide-react";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import type { Connection, ConnectionInput, SSHConfig } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,33 +52,45 @@ const emptyForm: ConnectionInput = {
   password: "",
   database: "",
   ssl: "disabled",
+  readOnly: false,
+  hideSystemDatabases: false,
   ssh: { ...defaultSSH },
 };
 
 export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Props) {
+  const { t } = useI18n();
   const [form, setForm] = useState<ConnectionInput>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
-    if (open) {
-      setStatus(null);
-      setForm(
-        connection
-          ? {
-              name: connection.name,
-              host: connection.host,
-              port: connection.port,
-              user: connection.user,
-              password: connection.password,
-              database: connection.database || "",
-              ssl: connection.ssl || "disabled",
-              ssh: { ...defaultSSH, ...(connection.ssh || {}) },
-            }
-          : emptyForm
-      );
+    if (!open) return;
+    setStatus(null);
+    if (!connection) {
+      setForm(emptyForm);
+      return;
     }
+    const toForm = (c: Connection): ConnectionInput => ({
+      name: c.name,
+      host: c.host,
+      port: c.port,
+      user: c.user,
+      password: c.password,
+      database: c.database || "",
+      ssl: c.ssl || "disabled",
+      readOnly: c.readOnly ?? false,
+      hideSystemDatabases: c.hideSystemDatabases ?? false,
+      ssh: { ...defaultSSH, ...(c.ssh || {}) },
+    });
+    // The list response is redacted, so fetch the full record to prefill secrets.
+    setForm(toForm(connection));
+    api
+      .getConnection(connection.id)
+      .then((full) => setForm(toForm(full)))
+      .catch(() => {
+        /* keep the redacted values */
+      });
   }, [open, connection]);
 
   const set = <K extends keyof ConnectionInput>(key: K, value: ConnectionInput[K]) =>
@@ -210,6 +223,34 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
               </Select>
             </div>
           </div>
+
+          <label className="flex cursor-pointer select-none items-center gap-2 rounded-lg border p-3 text-sm">
+            <Checkbox checked={form.readOnly ?? false} onCheckedChange={(v) => set("readOnly", Boolean(v))} />
+            <ShieldCheck className="h-4 w-4 text-amber-500" />
+            <span>
+              {t("connection.readOnly", "Read-only")}
+              <span className="block text-xs text-muted-foreground">
+                {t("connection.readOnlyHint", "Block inserts, updates, deletes and DDL on this connection.")}
+              </span>
+            </span>
+          </label>
+
+          <label className="flex cursor-pointer select-none items-center gap-2 rounded-lg border p-3 text-sm">
+            <Checkbox
+              checked={form.hideSystemDatabases ?? false}
+              onCheckedChange={(v) => set("hideSystemDatabases", Boolean(v))}
+            />
+            <EyeOff className="h-4 w-4 text-sky-400" />
+            <span>
+              {t("connection.hideSystem", "Hide system databases")}
+              <span className="block text-xs text-muted-foreground">
+                {t(
+                  "connection.hideSystemHint",
+                  "Hide information_schema, performance_schema, mysql and sys for this connection."
+                )}
+              </span>
+            </span>
+          </label>
 
           <div className="rounded-lg border p-3">
             <label className="flex cursor-pointer select-none items-center gap-2 text-sm font-medium">

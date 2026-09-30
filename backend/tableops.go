@@ -538,6 +538,9 @@ func defaultLiteral(v any, baseType string) string {
 }
 
 func (s *Server) createTable(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, _, ok := s.params(w, r)
 	if !ok {
 		return
@@ -637,6 +640,9 @@ func (s *Server) createTable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dropTable(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -650,6 +656,9 @@ func (s *Server) dropTable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renameTable(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -674,6 +683,9 @@ func (s *Server) renameTable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addColumn(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -704,6 +716,9 @@ func (s *Server) addColumn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) modifyColumn(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -732,6 +747,9 @@ func (s *Server) modifyColumn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dropColumn(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -750,6 +768,9 @@ func (s *Server) dropColumn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return
@@ -792,6 +813,9 @@ func (s *Server) addIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dropIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok || table == "" {
 		return

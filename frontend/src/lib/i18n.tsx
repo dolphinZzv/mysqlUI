@@ -298,6 +298,93 @@ const zh: Record<string, string> = {
   "common.yes": "是",
   "common.no": "否",
   "common.none": "无",
+
+  // charts
+  "chart.title": "图表",
+  "chart.type": "图表类型",
+  "chart.type.bar": "柱状图",
+  "chart.type.line": "折线图",
+  "chart.type.area": "面积图",
+  "chart.type.pie": "饼图",
+  "chart.xAxis": "X 轴",
+  "chart.pickField": "选择字段",
+  "chart.value": "数值",
+  "chart.agg.count": "计数",
+  "chart.agg.sum": "求和",
+  "chart.agg.avg": "平均",
+  "chart.agg.min": "最小",
+  "chart.agg.max": "最大",
+  "chart.agg.none": "原始值",
+  "chart.sort": "排序",
+  "chart.sort.none": "不排序",
+  "chart.sort.desc": "降序",
+  "chart.sort.asc": "升序",
+  "chart.limit": "数量",
+  "chart.reset": "重置",
+  "chart.fields": "数值字段",
+  "chart.empty": "数据不足，无法绘制图表。",
+  "chart.viewChart": "图表",
+  "chart.viewTable": "表格",
+
+  // execution plan
+  "explain.button": "执行计划",
+  "explain.title": "执行计划",
+  "explain.rerun": "重新运行",
+  "explain.queryCost": "查询代价",
+  "explain.empty": "运行查询以查看执行计划。",
+
+  // connection dialog
+  "connection.readOnly": "只读模式",
+  "connection.readOnlyHint": "阻止该连接上的插入、更新、删除和 DDL 操作。",
+
+  // app shell
+  "app.resizeSidebar": "拖动调整宽度，双击重置",
+
+  // login
+  "login.code": "动态验证码",
+  "login.descTotp": "请输入访问密码和动态验证码。",
+
+  // copy table
+  "copyTable.title": "复制表",
+  "copyTable.targetDatabase": "目标数据库",
+  "copyTable.targetTable": "目标表名",
+  "copyTable.copyData": "复制数据（INSERT ... SELECT）",
+  "copyTable.dropTarget": "若目标表已存在则先删除",
+  "copyTable.submit": "复制",
+  "copyTable.required": "请填写目标数据库和表名",
+  "copyTable.copied": "已复制到 {target}",
+  "copyTable.copiedRows": "已复制 {rows} 行到 {target}",
+
+  // schema versions (snapshots)
+  "versions.title": "结构版本",
+  "versions.seal": "封板快照",
+  "versions.sealDesc": "把 {db} 的当前结构保存为一个版本。",
+  "versions.name": "版本名称",
+  "versions.note": "备注（可选）",
+  "versions.notePlaceholder": "这个版本改了什么？",
+  "versions.created": "已封板“{name}”",
+  "versions.list": "已封板版本",
+  "versions.empty": "还没有版本，先封板一个快照吧。",
+  "versions.tables": "张表",
+  "versions.view": "查看",
+  "versions.live": "当前数据库（实时）",
+  "versions.base": "基准（From）",
+  "versions.target": "目标（To）",
+  "versions.swap": "交换",
+  "versions.compare": "对比",
+  "versions.hint": "选择基准版本和目标版本后点击对比。",
+  "versions.tablesAdded": "新增表",
+  "versions.tablesRemoved": "删除表",
+  "versions.apply": "应用到实时库",
+  "versions.applyHint": "仅在目标为实时数据库时可用，会在实时库上执行以上语句。",
+  "versions.executed": "已执行 {n} 条语句",
+  "versions.deleted": "版本已删除",
+  "versions.deleteTitle": "删除该版本？",
+  "versions.deleteDesc": "仅删除封板快照，不会影响数据库本身。",
+
+  // connection dialog (cont.)
+  "connection.hideSystem": "隐藏系统数据库",
+  "connection.hideSystemHint": "为该连接隐藏 information_schema、performance_schema、mysql 和 sys。",
 };
 
 const dictionaries: Record<Lang, Record<string, string>> = { en: {}, zh };

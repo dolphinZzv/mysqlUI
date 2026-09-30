@@ -51,6 +51,9 @@ func (s *Server) monitorProcessList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) monitorKill(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, ok := s.connDB(w, r)
 	if !ok {
 		return

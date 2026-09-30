@@ -21,6 +21,9 @@ const maxUploadBytes = 512 << 20 // 512 MiB
 // =========================================================================
 
 func (s *Server) importCSV(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok {
 		return
@@ -223,6 +226,9 @@ func parseBool(s string, def bool) bool {
 // =========================================================================
 
 func (s *Server) importSQL(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
 	entry, ok := s.entry(w, r)
 	if !ok {
 		return

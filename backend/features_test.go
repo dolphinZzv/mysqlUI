@@ -185,3 +185,28 @@ func TestParseBoolAndPlaceholders(t *testing.T) {
 		t.Errorf("placeholdersN(3) = %q", placeholdersN(3))
 	}
 }
+
+func TestBuildWhere(t *testing.T) {
+	clause, vals, err := buildWhere(map[string]any{"b": 2, "a": "x"})
+	if err != nil {
+		t.Fatalf("buildWhere: %v", err)
+	}
+	if clause != "`a` = ? AND `b` = ?" {
+		t.Errorf("clause = %q", clause)
+	}
+	if len(vals) != 2 || vals[0] != "x" || vals[1] != 2 {
+		t.Errorf("vals = %#v", vals)
+	}
+
+	clause, vals, err = buildWhere(map[string]any{"a": nil})
+	if err != nil {
+		t.Fatalf("buildWhere(nil): %v", err)
+	}
+	if clause != "`a` IS NULL" || len(vals) != 0 {
+		t.Errorf("null clause = %q, vals = %#v", clause, vals)
+	}
+
+	if _, _, err := buildWhere(map[string]any{"bad name": 1}); err == nil {
+		t.Error("expected error for an invalid identifier")
+	}
+}

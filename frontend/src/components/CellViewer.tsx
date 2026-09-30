@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { JsonEditor } from "@/components/JsonEditor";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface Props {
@@ -134,6 +135,15 @@ export function CellViewer({
           <div className="flex max-h-[60vh] items-center justify-center overflow-auto rounded-lg border bg-muted/20 p-4">
             <img src={dataUrl} alt={column} className="max-h-[55vh] max-w-full object-contain" />
           </div>
+        ) : isJSON ? (
+          <JsonEditor
+            value={text}
+            onChange={setText}
+            readOnly={!editable}
+            allowEmpty
+            showError={false}
+            className="h-[45vh]"
+          />
         ) : (
           <Textarea
             value={text}

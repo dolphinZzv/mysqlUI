@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Table2,
   Trash2,
+  X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { FilterCondition, ForeignKeyInfo, TableData, TableStructure } from "@/lib/types";
@@ -63,6 +64,9 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [cellViewer, setCellViewer] = useState<{ open: boolean; rowIndex: number; column: string } | null>(null);
 
   const loadStructure = useCallback(async () => {
@@ -91,6 +95,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           filters
         );
         setData(res);
+        setSelected(new Set());
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -188,6 +193,40 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     } catch (err) {
       toast.error("Delete failed", { description: err instanceof Error ? err.message : String(err) });
       setDeleteTarget(null);
+    }
+  };
+
+  const confirmBulkDelete = async () => {
+    if (!data || selected.size === 0) return;
+    if (data.primaryKey.length === 0) {
+      toast.error("Cannot delete", {
+        description: "This table has no primary key, so rows cannot be targeted safely.",
+      });
+      setBulkOpen(false);
+      return;
+    }
+    const keys: Record<string, unknown>[] = [];
+    for (const index of selected) {
+      const pk = buildPrimaryKey(index);
+      if (!pk) {
+        toast.error("Cannot delete", { description: "Some selected rows could not be identified." });
+        setBulkOpen(false);
+        return;
+      }
+      keys.push(pk);
+    }
+    setBulkBusy(true);
+    try {
+      const res = await api.bulkDeleteRows(tab.connectionId, tab.database, tab.table, keys);
+      toast.success(`Deleted ${res.affected} row(s)`);
+      setSelected(new Set());
+      setBulkOpen(false);
+      if (data.rows.length === selected.size && page > 0) setPage((p) => p - 1);
+      else void loadData(page, pageSize);
+    } catch (err) {
+      toast.error("Delete failed", { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -326,6 +365,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             onDeleteRow={(r) => setDeleteTarget(r)}
             onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
             onJump={(fk, value) => onOpenRef?.(fk, value)}
+            selected={selected}
+            onSelectedChange={setSelected}
           />
         ) : (
           <Centered>
@@ -335,6 +376,23 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         {loading && data && (
           <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-2 rounded-md border bg-card/90 px-2 py-1 text-xs shadow">
             <Loader2 className="h-3 w-3 animate-spin" /> loading…
+          </div>
+        )}
+        {view === "data" && selected.size > 0 && (
+          <div className="absolute left-3 top-3 z-30 flex items-center gap-3 rounded-md border bg-card/95 px-3 py-1.5 text-sm shadow-lg">
+            <span className="text-muted-foreground">{selected.size} selected</span>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={bulkBusy || data?.primaryKey.length === 0}
+              title={data?.primaryKey.length === 0 ? "Table has no primary key" : undefined}
+              onClick={() => setBulkOpen(true)}
+            >
+              {bulkBusy ? <Loader2 className="animate-spin" /> : <Trash2 />} Delete selected
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+              <X /> Clear
+            </Button>
           </div>
         )}
       </div>
@@ -379,6 +437,36 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
               onClick={confirmDelete}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-destructive" /> Delete {selected.size} row(s)?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the selected rows from{" "}
+              <span className="font-mono">
+                {tab.database}.{tab.table}
+              </span>{" "}
+              in a single transaction. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkBusy}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={bulkBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmBulkDelete();
+              }}
+            >
+              {bulkBusy ? <Loader2 className="animate-spin" /> : null} Delete {selected.size}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

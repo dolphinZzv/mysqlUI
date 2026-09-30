@@ -16,16 +16,20 @@ import (
 
 // Connection is the persisted description of a MySQL server.
 type Connection struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	Host     string     `json:"host"`
-	Port     int        `json:"port"`
-	User     string     `json:"user"`
-	Password string     `json:"password"`
-	Database string     `json:"database"`
-	SSL      string     `json:"ssl,omitempty"`
-	Color    string     `json:"color,omitempty"`
-	SSH      *SSHConfig `json:"ssh,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	Database string `json:"database"`
+	SSL      string `json:"ssl,omitempty"`
+	Color    string `json:"color,omitempty"`
+	ReadOnly bool   `json:"readOnly,omitempty"`
+	// HideSystemDatabases hides information_schema / performance_schema / mysql /
+	// sys from database listings for this connection.
+	HideSystemDatabases bool       `json:"hideSystemDatabases,omitempty"`
+	SSH                 *SSHConfig `json:"ssh,omitempty"`
 }
 
 // ConnEntry couples a Connection with lazily created connection pools, one per
@@ -120,20 +124,50 @@ func (e *ConnEntry) Ping() error {
 
 // Store keeps all connections in memory and persists their metadata as JSON.
 type Store struct {
-	mu    sync.RWMutex
-	path  string
-	conns map[string]*ConnEntry
+	mu     sync.RWMutex
+	path   string
+	cipher *Cipher
+	conns  map[string]*ConnEntry
 }
 
+// NewStore loads connections from path without encryption.
 func NewStore(path string) (*Store, error) {
-	s := &Store{path: path, conns: map[string]*ConnEntry{}}
+	return NewStoreWithCipher(path, nil)
+}
+
+// NewStoreWithCipher loads connections from path, transparently decrypting
+// sensitive fields with cipher (nil disables encryption). Plaintext stores are
+// rewritten encrypted on first load.
+func NewStoreWithCipher(path string, cipher *Cipher) (*Store, error) {
+	s := &Store{path: path, cipher: cipher, conns: map[string]*ConnEntry{}}
 	data, err := os.ReadFile(path)
-	if err == nil {
-		var list []Connection
-		if err := json.Unmarshal(data, &list); err == nil {
-			for _, c := range list {
-				s.conns[c.ID] = newConnEntry(c)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return nil, err
+	}
+	var list []Connection
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, err
+	}
+	migrate := false
+	for _, c := range list {
+		if cipher != nil {
+			if needsEncryption(c) {
+				migrate = true
 			}
+			dec, err := cipher.decryptConnection(c)
+			if err != nil {
+				return nil, err
+			}
+			c = dec
+		}
+		s.conns[c.ID] = newConnEntry(c)
+	}
+	if migrate {
+		if err := s.saveLocked(); err != nil {
+			return nil, err
 		}
 	}
 	return s, nil
@@ -142,6 +176,14 @@ func NewStore(path string) (*Store, error) {
 func (s *Store) saveLocked() error {
 	list := make([]Connection, 0, len(s.conns))
 	for _, e := range s.conns {
+		if s.cipher != nil {
+			enc, err := s.cipher.encryptConnection(e.Info)
+			if err != nil {
+				return err
+			}
+			list = append(list, enc)
+			continue
+		}
 		list = append(list, e.Info)
 	}
 	data, err := json.MarshalIndent(list, "", "  ")
@@ -153,7 +195,11 @@ func (s *Store) saveLocked() error {
 			return err
 		}
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 func (s *Store) List() []Connection {

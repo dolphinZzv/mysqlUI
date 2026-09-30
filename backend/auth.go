@@ -24,17 +24,21 @@ const authCookieName = "mysqlui_token"
 // When no password is configured the manager is disabled and every request is
 // allowed (the default for local use).
 type authManager struct {
-	mu       sync.Mutex
-	enabled  bool
-	password string
-	secret   []byte
-	ttl      time.Duration
+	mu          sync.Mutex
+	enabled     bool
+	password    string
+	totpSecret  string
+	totpEnabled bool
+	secret      []byte
+	ttl         time.Duration
 }
 
 func newAuthManager(dir string) *authManager {
 	a := &authManager{ttl: 7 * 24 * time.Hour}
 	a.password = firstNonEmpty(os.Getenv("MYSQLUI_AUTH_PASSWORD"), os.Getenv("MYSQLUI_PASSWORD"))
 	a.enabled = strings.TrimSpace(a.password) != ""
+	a.totpSecret = strings.TrimSpace(os.Getenv("MYSQLUI_TOTP_SECRET"))
+	a.totpEnabled = a.totpSecret != ""
 
 	secret := os.Getenv("MYSQLUI_AUTH_SECRET")
 	if secret == "" {
@@ -136,6 +140,7 @@ func (a *authManager) statusHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"required":      a.enabled,
 		"authenticated": a.authenticated(r),
+		"totp":          a.totpEnabled,
 	})
 }
 
@@ -146,6 +151,7 @@ func (a *authManager) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid request body"))
@@ -156,6 +162,11 @@ func (a *authManager) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare(expected, got) != 1 {
 		time.Sleep(300 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, errors.New("invalid password"))
+		return
+	}
+	if a.totpEnabled && !validateTOTP(a.totpSecret, in.Code, time.Now()) {
+		time.Sleep(300 * time.Millisecond)
+		writeErr(w, http.StatusUnauthorized, errors.New("invalid one-time code"))
 		return
 	}
 	token := a.issueToken()

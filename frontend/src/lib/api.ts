@@ -5,7 +5,9 @@ import type {
   Connection,
   ConnectionInput,
   ConnectionTestResult,
+  CopyTableRequest,
   CreateTableRequest,
+  DatabaseDiffResult,
   DatabaseInfo,
   DefinitionResult,
   ErdResponse,
@@ -18,6 +20,7 @@ import type {
   QueryResult,
   RoutineInfo,
   SchemaDiffResult,
+  SchemaSnapshot,
   SearchResult,
   ServerInfo,
   TableData,
@@ -111,15 +114,16 @@ function dataQuery(limit: number, offset: number, orderBy?: string, filters?: Fi
 export const api = {
   // auth
   authStatus: () => request<AuthStatus>("/auth/status"),
-  login: (password: string) =>
+  login: (password: string, code?: string) =>
     request<{ ok: boolean; token?: string }>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, code: code ?? "" }),
     }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST", body: "{}" }),
 
   // connections
   listConnections: () => request<Connection[]>("/connections"),
+  getConnection: (id: string) => request<Connection>(connBase(id)),
   createConnection: (input: ConnectionInput) =>
     request<{ connection: Connection; connected: boolean; latencyMs?: number; error?: string }>("/connections", {
       method: "POST",
@@ -180,6 +184,11 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify({ primaryKey }),
     }),
+  bulkDeleteRows: (id: string, db: string, table: string, keys: Record<string, unknown>[]) =>
+    request<{ affected: number }>(`${tableBase(id, db, table)}/rows/bulk-delete`, {
+      method: "POST",
+      body: JSON.stringify({ keys }),
+    }),
 
   // table designer (DDL)
   createTable: (id: string, db: string, body: CreateTableRequest) =>
@@ -190,6 +199,11 @@ export const api = {
     request<{ ok: boolean }>(`${tableBase(id, db, table)}/rename`, {
       method: "POST",
       body: JSON.stringify({ newName }),
+    }),
+  copyTable: (id: string, db: string, table: string, body: CopyTableRequest) =>
+    request<{ ok: boolean; target: string; rowsCopied: number }>(`${tableBase(id, db, table)}/copy`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   addColumn: (id: string, db: string, table: string, column: ColumnDefInput, after?: string) =>
     request<{ ok: boolean }>(`${tableBase(id, db, table)}/columns`, {
@@ -312,6 +326,27 @@ export const api = {
     request<SchemaDiffResult>(`${connBase(id)}/diff`, {
       method: "POST",
       body: JSON.stringify({ source, target }),
+    }),
+
+  // schema versions (snapshots)
+  listSchemaVersions: (id: string, db: string) =>
+    request<SchemaSnapshot[]>(`${connBase(id)}/schema-versions?database=${enc(db)}`),
+  createSchemaVersion: (id: string, body: { database: string; name: string; note?: string }) =>
+    request<SchemaSnapshot>(`${connBase(id)}/schema-versions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getSchemaVersion: (id: string, versionId: string) =>
+    request<SchemaSnapshot>(`${connBase(id)}/schema-versions/${enc(versionId)}`),
+  deleteSchemaVersion: (id: string, versionId: string) =>
+    request<{ ok: boolean }>(`${connBase(id)}/schema-versions/${enc(versionId)}`, { method: "DELETE" }),
+  diffSchemaVersions: (
+    id: string,
+    body: { database: string; base: { versionId: string }; target: { versionId: string } }
+  ) =>
+    request<DatabaseDiffResult>(`${connBase(id)}/schema-versions/diff`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 
   version: () => request<{ version: string }>("/version"),

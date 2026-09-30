@@ -20,6 +20,8 @@ export interface Connection {
   database: string;
   ssl?: string;
   color?: string;
+  readOnly?: boolean;
+  hideSystemDatabases?: boolean;
   ssh?: SSHConfig;
 }
 
@@ -32,6 +34,8 @@ export interface ConnectionInput {
   database: string;
   ssl?: string;
   color?: string;
+  readOnly?: boolean;
+  hideSystemDatabases?: boolean;
   ssh?: SSHConfig;
 }
 
@@ -117,6 +121,13 @@ export interface ConnectionTestResult {
   error?: string;
 }
 
+export interface CopyTableRequest {
+  targetDatabase: string;
+  targetTable: string;
+  dropTarget: boolean;
+  copyData: boolean;
+}
+
 export interface FilterCondition {
   column: string;
   op: string;
@@ -167,6 +178,7 @@ export interface ServerInfo {
 export interface AuthStatus {
   required: boolean;
   authenticated: boolean;
+  totp?: boolean;
 }
 
 export interface ProcessInfo {
@@ -283,6 +295,42 @@ export interface SchemaDiffResult {
   columnsChanged: ColumnChange[];
   indexesAdded: SchemaIndex[];
   indexesRemoved: SchemaIndex[];
+  ddl: string[];
+}
+
+export interface SnapshotTable {
+  name: string;
+  type: string;
+  createSql: string;
+  columns: SchemaColumn[];
+  indexes: SchemaIndex[];
+}
+
+export interface SchemaSnapshot {
+  id: string;
+  connectionId: string;
+  database: string;
+  name: string;
+  note?: string;
+  createdAt: string;
+  tableCount: number;
+  tables?: SnapshotTable[];
+}
+
+export interface TableSummary {
+  name: string;
+  createSql: string;
+}
+
+export interface TableSchemaDiff extends SchemaDiffResult {
+  table: string;
+  status: string;
+}
+
+export interface DatabaseDiffResult {
+  tablesAdded: TableSummary[];
+  tablesRemoved: TableSummary[];
+  tablesChanged: TableSchemaDiff[];
   ddl: string[];
 }
 

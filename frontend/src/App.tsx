@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Toaster, toast } from "sonner";
 import {
   Database,
@@ -31,13 +31,16 @@ import { UsersTab } from "@/components/UsersTab";
 import { ErdView } from "@/components/ErdView";
 import { SchemaDiffView } from "@/components/SchemaDiffView";
 import { RoutinesView } from "@/components/RoutinesView";
+import { SchemaVersionsView } from "@/components/SchemaVersionsView";
 import { ObjectSearch } from "@/components/ObjectSearch";
 import { ImportDialog } from "@/components/ImportDialog";
 import { LoginScreen } from "@/components/LoginScreen";
+import { useRouter, sameRoute, type Route } from "@/lib/router";
 
 const THEME_KEY = "mysqlui.theme";
 const TABS_KEY = "mysqlui.tabs";
 const ACTIVE_KEY = "mysqlui.activeTab";
+const SIDEBAR_KEY = "mysqlui.sidebarWidth";
 
 function newQueryTab(connection: Connection, database = ""): TabDef {
   return {
@@ -56,7 +59,54 @@ const GENERIC_TITLES: Record<GenericTabKind, string> = {
   erd: "ER diagram",
   diff: "Schema diff",
   routines: "Routines",
+  versions: "Schema versions",
 };
+
+function routeFromTab(tab: TabDef): Route {
+  if (tab.kind === "table") {
+    return { kind: "table", connectionId: tab.connectionId, database: tab.database, table: tab.table };
+  }
+  if (tab.kind === "query") {
+    return { kind: "query", connectionId: tab.connectionId, database: tab.database };
+  }
+  return { kind: "generic", generic: tab.kind, connectionId: tab.connectionId, database: tab.database };
+}
+
+function tabMatchesRoute(tab: TabDef, route: Route): boolean {
+  if (route.kind === "welcome" || tab.connectionId !== route.connectionId) return false;
+  if (route.kind === "table") {
+    return tab.kind === "table" && tab.database === route.database && tab.table === route.table;
+  }
+  if (route.kind === "query") {
+    return tab.kind === "query" && (tab.database || "") === (route.database || "");
+  }
+  return tab.kind === route.generic && (tab.database || "") === (route.database || "");
+}
+
+function tabFromRoute(route: Route, connection: Connection): TabDef {
+  if (route.kind === "table") {
+    return {
+      id: tableTabId(connection.id, route.database, route.table),
+      kind: "table",
+      connectionId: connection.id,
+      connectionName: connection.name,
+      database: route.database,
+      table: route.table,
+      title: route.table,
+    };
+  }
+  if (route.kind === "generic") {
+    return {
+      id: genericTabId(route.generic, connection.id, route.database),
+      kind: route.generic,
+      connectionId: connection.id,
+      connectionName: connection.name,
+      database: route.database,
+      title: route.database ? `${route.database} — ${GENERIC_TITLES[route.generic]}` : GENERIC_TITLES[route.generic],
+    };
+  }
+  return newQueryTab(connection, route.kind === "query" ? route.database : "");
+}
 
 export default function App() {
   const { t, lang, setLang } = useI18n();
@@ -66,6 +116,10 @@ export default function App() {
   const [auth, setAuth] = useState<"checking" | "login" | "ready">("checking");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(SIDEBAR_KEY));
+    return stored >= 200 && stored <= 640 ? stored : 288;
+  });
   const [tabs, setTabs] = useState<TabDef[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -80,10 +134,47 @@ export default function App() {
   }>({ open: false, connection: null, database: null, table: null });
   const restored = useRef(false);
 
+  // ---- URL routing -------------------------------------------------------
+  // The active tab is mirrored in the URL so a refresh / shared link / browser
+  // back-forward restores the exact view. The open-tab list still lives in
+  // localStorage; the URL only pins which tab is active.
+  const { route, navigate } = useRouter();
+  const [restoredReady, setRestoredReady] = useState(false);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const didInitialSync = useRef(false);
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  const startSidebarResize = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = sidebarWidth;
+      const onMove = (move: MouseEvent) => {
+        const next = Math.min(640, Math.max(200, startWidth + move.clientX - startX));
+        setSidebarWidth(next);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+      };
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [sidebarWidth]
+  );
 
   // ---- auth ----
   const checkAuth = useCallback(async () => {
@@ -139,6 +230,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    setRestoredReady(true);
   }, [auth]);
 
   useEffect(() => {
@@ -150,6 +242,37 @@ export default function App() {
       /* ignore */
     }
   }, [tabs, activeId]);
+
+  // Open (or activate) the tab named by the current URL. This runs after the
+  // session has been restored from localStorage and the connections are known.
+  useEffect(() => {
+    if (auth !== "ready" || !restoredReady || route.kind === "welcome") return;
+    // If the active tab already matches the URL, keep it (important when several
+    // query tabs share the same connection/database route).
+    const current = tabsRef.current.find((x) => x.id === activeIdRef.current);
+    if (current && tabMatchesRoute(current, route)) return;
+    const existing = tabsRef.current.find((x) => tabMatchesRoute(x, route));
+    if (existing) {
+      setActiveId(existing.id);
+      return;
+    }
+    const connection = connections.find((c) => c.id === route.connectionId);
+    if (!connection) return;
+    const tab = tabFromRoute(route, connection);
+    setTabs((prev) => (prev.some((x) => tabMatchesRoute(x, route)) ? prev : [...prev, tab]));
+    setActiveId(tab.id);
+  }, [route, connections, auth, restoredReady]);
+
+  // Mirror the active tab back into the URL.
+  useEffect(() => {
+    if (!restoredReady) return;
+    const replace = !didInitialSync.current;
+    didInitialSync.current = true;
+    const tab = tabs.find((x) => x.id === activeId);
+    const desired: Route = tab ? routeFromTab(tab) : { kind: "welcome" };
+    if (sameRoute(desired, route)) return;
+    navigate(desired, { replace });
+  }, [activeId, tabs, route, restoredReady, navigate]);
 
   // ---- keyboard shortcuts ----
   useEffect(() => {
@@ -354,9 +477,11 @@ export default function App() {
 
         <div className="flex min-h-0 flex-1">
           {sidebarOpen && (
-            <Sidebar
-              connections={connections}
-              onOpenTable={openTable}
+            <>
+              <Sidebar
+                connections={connections}
+                width={sidebarWidth}
+                onOpenTable={openTable}
               onNewQuery={openQuery}
               onOpenGeneric={openGeneric}
               onImport={(conn, db, table) => setImportState({ open: true, connection: conn, database: db, table })}
@@ -374,6 +499,15 @@ export default function App() {
                 setDialogOpen(true);
               }}
             />
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                title={t("app.resizeSidebar", "Drag to resize, double-click to reset")}
+                onMouseDown={startSidebarResize}
+                onDoubleClick={() => setSidebarWidth(288)}
+                className="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-primary/40"
+              />
+            </>
           )}
 
           <main className="flex min-w-0 flex-1 flex-col">
@@ -506,6 +640,8 @@ function renderTab(
       return <SchemaDiffView connectionId={tab.connectionId} database={tab.database} />;
     case "routines":
       return <RoutinesView connectionId={tab.connectionId} database={tab.database} />;
+    case "versions":
+      return <SchemaVersionsView connectionId={tab.connectionId} database={tab.database} />;
     default:
       return null;
   }

@@ -237,6 +237,11 @@ func (s *Server) schemaDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := diffSchemaTable(src, tgt, in.Target.Database, in.Target.Table)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func diffSchemaTable(src, tgt *schemaTable, targetDB, targetTable string) schemaDiffResponse {
 	resp := schemaDiffResponse{
 		ColumnsAdded:   []schemaColumn{},
 		ColumnsRemoved: []schemaColumn{},
@@ -245,6 +250,12 @@ func (s *Server) schemaDiff(w http.ResponseWriter, r *http.Request) {
 		IndexesRemoved: []schemaIndex{},
 		DDL:            []string{},
 	}
+	target := qualify(targetDB, targetTable)
+
+	// DDL is emitted in a safe execution order: drop indexes before touching
+	// columns (a dropped column would otherwise cascade away its index), then
+	// drop/add/modify columns, and finally add indexes once the columns exist.
+	var dropIndexes, dropColumns, addColumns, modifyColumns, addIndexes []string
 
 	srcCols := map[string]schemaColumn{}
 	for _, c := range src.Columns {
@@ -258,16 +269,16 @@ func (s *Server) schemaDiff(w http.ResponseWriter, r *http.Request) {
 	for _, c := range src.Columns {
 		if t, ok := tgtCols[strings.ToLower(c.Name)]; !ok {
 			resp.ColumnsAdded = append(resp.ColumnsAdded, c)
-			resp.DDL = append(resp.DDL, "ALTER TABLE "+qualify(in.Target.Database, in.Target.Table)+" ADD COLUMN "+columnDDL(c))
+			addColumns = append(addColumns, "ALTER TABLE "+target+" ADD COLUMN "+columnDDL(c))
 		} else if !sameColumn(c, t) {
 			resp.ColumnsChanged = append(resp.ColumnsChanged, columnChange{Name: c.Name, Source: c, Target: t})
-			resp.DDL = append(resp.DDL, "ALTER TABLE "+qualify(in.Target.Database, in.Target.Table)+" MODIFY COLUMN "+columnDDL(c))
+			modifyColumns = append(modifyColumns, "ALTER TABLE "+target+" MODIFY COLUMN "+columnDDL(c))
 		}
 	}
 	for _, c := range tgt.Columns {
 		if _, ok := srcCols[strings.ToLower(c.Name)]; !ok {
 			resp.ColumnsRemoved = append(resp.ColumnsRemoved, c)
-			resp.DDL = append(resp.DDL, "ALTER TABLE "+qualify(in.Target.Database, in.Target.Table)+" DROP COLUMN "+quoteIdent(c.Name))
+			dropColumns = append(dropColumns, "ALTER TABLE "+target+" DROP COLUMN "+quoteIdent(c.Name))
 		}
 	}
 
@@ -283,20 +294,25 @@ func (s *Server) schemaDiff(w http.ResponseWriter, r *http.Request) {
 		t, ok := tgtIdx[strings.ToLower(i.Name)]
 		if !ok {
 			resp.IndexesAdded = append(resp.IndexesAdded, i)
-			resp.DDL = append(resp.DDL, indexDDL(in.Target.Database, in.Target.Table, i, true))
+			addIndexes = append(addIndexes, indexDDL(targetDB, targetTable, i, true))
 		} else if !indexColumnsEqual(i, t) {
 			resp.IndexesRemoved = append(resp.IndexesRemoved, t)
 			resp.IndexesAdded = append(resp.IndexesAdded, i)
-			resp.DDL = append(resp.DDL, indexDDL(in.Target.Database, in.Target.Table, t, false))
-			resp.DDL = append(resp.DDL, indexDDL(in.Target.Database, in.Target.Table, i, true))
+			dropIndexes = append(dropIndexes, indexDDL(targetDB, targetTable, t, false))
+			addIndexes = append(addIndexes, indexDDL(targetDB, targetTable, i, true))
 		}
 	}
 	for _, i := range tgt.Indexes {
 		if _, ok := srcIdx[strings.ToLower(i.Name)]; !ok {
 			resp.IndexesRemoved = append(resp.IndexesRemoved, i)
-			resp.DDL = append(resp.DDL, indexDDL(in.Target.Database, in.Target.Table, i, false))
+			dropIndexes = append(dropIndexes, indexDDL(targetDB, targetTable, i, false))
 		}
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	resp.DDL = append(resp.DDL, dropIndexes...)
+	resp.DDL = append(resp.DDL, dropColumns...)
+	resp.DDL = append(resp.DDL, addColumns...)
+	resp.DDL = append(resp.DDL, modifyColumns...)
+	resp.DDL = append(resp.DDL, addIndexes...)
+	return resp
 }

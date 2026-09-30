@@ -27,6 +27,11 @@
     --sidebar-foreground: 222 47% 20%;
     --sidebar-border: 214 32% 91%;
     --sidebar-accent: 210 40% 93%;
+    --chart-1: 221 83% 53%;
+    --chart-2: 173 80% 40%;
+    --chart-3: 262 83% 58%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 340 82% 52%;
     --radius: 0.6rem;
   }
 
@@ -54,6 +59,11 @@
     --sidebar-foreground: 213 27% 82%;
     --sidebar-border: 222 16% 16%;
     --sidebar-accent: 222 18% 15%;
+    --chart-1: 217 91% 65%;
+    --chart-2: 172 66% 50%;
+    --chart-3: 263 70% 68%;
+    --chart-4: 43 96% 60%;
+    --chart-5: 340 82% 62%;
   }
 
   * {

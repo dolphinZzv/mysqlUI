@@ -6,10 +6,12 @@ import {
   Braces,
   ChevronRight,
   Copy,
+  CopyPlus,
   Database as DatabaseIcon,
   Download,
   Eye,
   GitCompare,
+  History,
   Loader2,
   MoreVertical,
   Network,
@@ -58,9 +60,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { TableDesignerDialog } from "@/components/TableDesignerDialog";
+import { CopyTableDialog } from "@/components/CopyTableDialog";
 
 interface Props {
   connections: Connection[];
+  width?: number;
   onOpenTable: (connection: Connection, database: string, table: string) => void;
   onNewQuery: (connection: Connection, database?: string) => void;
   onOpenGeneric: (kind: GenericTabKind, connection: Connection, database?: string) => void;
@@ -75,6 +79,7 @@ const dbKey = (connId: string, db: string) => `${connId}:${db}`;
 
 export function Sidebar({
   connections,
+  width,
   onOpenTable,
   onNewQuery,
   onOpenGeneric,
@@ -97,6 +102,12 @@ export function Sidebar({
     connection: null,
     database: "",
   });
+  const [copyState, setCopyState] = useState<{
+    open: boolean;
+    connection: Connection | null;
+    database: string;
+    table: string;
+  }>({ open: false, connection: null, database: "", table: "" });
 
   const markLoading = (key: string, on: boolean) =>
     setLoading((prev) => {
@@ -217,7 +228,10 @@ export function Sidebar({
   };
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+    <div
+      className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+      style={width ? { width } : undefined}
+    >
       <div className="flex items-center justify-between px-3 py-2.5">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Connections</span>
         <div className="flex items-center gap-0.5">
@@ -454,6 +468,9 @@ export function Sidebar({
                               <ContextMenuItem onClick={() => onOpenGeneric("diff", conn, db.name)}>
                                 <GitCompare /> Schema diff
                               </ContextMenuItem>
+                              <ContextMenuItem onClick={() => onOpenGeneric("versions", conn, db.name)}>
+                                <History /> Schema versions
+                              </ContextMenuItem>
                               <ContextMenuSeparator />
                               <ContextMenuItem
                                 onClick={() => {
@@ -513,6 +530,18 @@ export function Sidebar({
                                       </ContextMenuItem>
                                       <ContextMenuItem onClick={() => onImport(conn, db.name, table.name)}>
                                         <Upload /> Import CSV
+                                      </ContextMenuItem>
+                                      <ContextMenuItem
+                                        onClick={() =>
+                                          setCopyState({
+                                            open: true,
+                                            connection: conn,
+                                            database: db.name,
+                                            table: table.name,
+                                          })
+                                        }
+                                      >
+                                        <CopyPlus /> Copy table…
                                       </ContextMenuItem>
                                       <ContextMenuItem onClick={() => copy(table.name, "Table name copied")}>
                                         <Copy /> Copy name
@@ -574,6 +603,23 @@ export function Sidebar({
         onOpenChange={(o) => setDesigner((s) => ({ ...s, open: o }))}
         onSubmit={handleCreateTable}
       />
+
+      {copyState.connection && (
+        <CopyTableDialog
+          open={copyState.open}
+          onOpenChange={(o) => setCopyState((s) => ({ ...s, open: o }))}
+          connectionId={copyState.connection.id}
+          database={copyState.database}
+          table={copyState.table}
+          onDone={() => {
+            if (copyState.connection) {
+              const key = dbKey(copyState.connection.id, copyState.database);
+              setExpandedDbs((prev) => new Set(prev).add(key));
+              void loadTables(copyState.connection, copyState.database);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

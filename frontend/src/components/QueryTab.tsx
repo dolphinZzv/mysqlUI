@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Clock,
   Copy,
@@ -16,7 +17,9 @@ import {
   Play,
   Server,
   Star,
+  Table2,
   Trash2,
+  TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
@@ -35,6 +38,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ResultGrid } from "@/components/ResultGrid";
+import { ChartView } from "@/components/ChartView";
+import { ExplainDialog } from "@/components/ExplainDialog";
 import { SqlEditor, type SqlSchema } from "@/components/SqlEditor";
 import { QueryBuilder } from "@/components/QueryBuilder";
 
@@ -101,6 +106,8 @@ export function QueryTab({ tab, connections }: Props) {
   const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
   const [favorites, setFavorites] = useState<string[]>(() => loadJSON<string[]>(FAVORITES_KEY, []));
   const [builderOpen, setBuilderOpen] = useState(false);
+  const [view, setView] = useState<"table" | "chart">("table");
+  const [explainOpen, setExplainOpen] = useState(false);
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -190,6 +197,11 @@ export function QueryTab({ tab, connections }: Props) {
     });
   };
 
+  const rowRecords = useMemo(() => {
+    if (!result) return [];
+    return result.rows.map((row) => Object.fromEntries(result.columns.map((c, i) => [c, row[i]])));
+  }, [result]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
@@ -275,6 +287,9 @@ export function QueryTab({ tab, connections }: Props) {
           <Button size="sm" variant="outline" onClick={() => { setSql(""); setResult(null); setError(null); }}>
             <Eraser /> {t("query.clear", "Clear")}
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setExplainOpen(true)} disabled={!sql.trim()}>
+            <TrendingUp /> {t("explain.button", "Explain")}
+          </Button>
           <Button size="sm" onClick={run} disabled={running || !connectionId}>
             {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
             <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
@@ -339,6 +354,15 @@ export function QueryTab({ tab, connections }: Props) {
 
         {result && result.isQuery && result.rowCount > 0 && (
           <div className="ml-auto flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant={view === "chart" ? "default" : "outline"}
+              onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
+              title={t("chart.title", "Chart")}
+            >
+              {view === "chart" ? <Table2 /> : <BarChart3 />}
+              {view === "chart" ? t("chart.viewTable", "Table") : t("chart.viewChart", "Chart")}
+            </Button>
             <Button size="icon-sm" variant="ghost" title={t("query.copyInsert", "Copy as INSERT")} onClick={() => copyResult("insert")}>
               <Copy />
             </Button>
@@ -373,7 +397,11 @@ export function QueryTab({ tab, connections }: Props) {
             </div>
           </div>
         ) : result?.isQuery ? (
-          <ResultGrid columns={result.columns} rows={result.rows} />
+          view === "chart" ? (
+            <ChartView rows={rowRecords} columns={result.columns} storageKey={`query:${connectionId}:${database}`} />
+          ) : (
+            <ResultGrid columns={result.columns} rows={result.rows} />
+          )
         ) : result ? (
           <div className="flex h-full items-center justify-center">
             <div className="rounded-lg border bg-card px-6 py-5 text-center">
@@ -395,6 +423,14 @@ export function QueryTab({ tab, connections }: Props) {
           </div>
         )}
       </div>
+
+      <ExplainDialog
+        open={explainOpen}
+        onOpenChange={setExplainOpen}
+        connectionId={connectionId}
+        database={database}
+        sql={sql}
+      />
     </div>
   );
 }

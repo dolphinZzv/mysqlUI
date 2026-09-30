@@ -25,13 +25,27 @@ func main() {
 func runServer() {
 	dir := dataDir()
 
-	store, err := NewStore(filepath.Join(dir, "connections.json"))
+	key, err := LoadKey(dir)
+	if err != nil {
+		log.Fatalf("failed to load secret key: %v", err)
+	}
+	cipher, err := NewCipher(key)
+	if err != nil {
+		log.Fatalf("failed to init cipher: %v", err)
+	}
+
+	store, err := NewStoreWithCipher(filepath.Join(dir, "connections.json"), cipher)
 	if err != nil {
 		log.Fatalf("failed to init store: %v", err)
 	}
 
+	versions, err := NewSchemaVersionStore(filepath.Join(dir, "schema-versions.json"))
+	if err != nil {
+		log.Fatalf("failed to init schema version store: %v", err)
+	}
+
 	auth := newAuthManager(dir)
-	srv := &Server{store: store, auth: auth}
+	srv := &Server{store: store, versions: versions, auth: auth}
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
