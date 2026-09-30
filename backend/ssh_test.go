@@ -36,9 +36,9 @@ func TestBuildSSHClientConfig(t *testing.T) {
 		{"missing host", &SSHConfig{Enabled: true, User: "u", Password: "p"}, true, 0},
 		{"missing user", &SSHConfig{Enabled: true, Host: "h", Password: "p"}, true, 0},
 		{"missing auth", &SSHConfig{Enabled: true, Host: "h", User: "u"}, true, 0},
-		{"password", &SSHConfig{Enabled: true, Host: "h", User: "u", Password: "p"}, false, 1},
-		{"private key", &SSHConfig{Enabled: true, Host: "h", User: "u", PrivateKey: key}, false, 1},
-		{"key and password", &SSHConfig{Enabled: true, Host: "h", User: "u", PrivateKey: key, Password: "p"}, false, 2},
+		{"password", &SSHConfig{Enabled: true, Host: "h", User: "u", Password: "p", IgnoreHostKey: true}, false, 1},
+		{"private key", &SSHConfig{Enabled: true, Host: "h", User: "u", PrivateKey: key, IgnoreHostKey: true}, false, 1},
+		{"key and password", &SSHConfig{Enabled: true, Host: "h", User: "u", PrivateKey: key, Password: "p", IgnoreHostKey: true}, false, 2},
 		{"invalid key", &SSHConfig{Enabled: true, Host: "h", User: "u", PrivateKey: "not-a-key"}, true, 0},
 	}
 
