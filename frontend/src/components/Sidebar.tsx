@@ -16,6 +16,8 @@ import {
   MoreVertical,
   Network,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Search,
@@ -27,10 +29,12 @@ import {
   Unplug,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import { api, databaseExportUrl, serverExportUrl, triggerDownload } from "@/lib/api";
 import type { Connection, CreateTableRequest, DatabaseInfo, TableInfo } from "@/lib/types";
 import type { GenericTabKind } from "@/lib/tabs";
+import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,7 +70,7 @@ interface Props {
   connections: Connection[];
   width?: number;
   onOpenTable: (connection: Connection, database: string, table: string) => void;
-  onNewQuery: (connection: Connection, database?: string) => void;
+  onNewQuery: (connection: Connection, database?: string, sql?: string) => void;
   onOpenGeneric: (kind: GenericTabKind, connection: Connection, database?: string) => void;
   onImport: (connection: Connection, database: string | null, table: string | null) => void;
   onBackup: (connection: Connection, database: string | null) => void;
@@ -90,6 +94,7 @@ export function Sidebar({
   onNewConnection,
 }: Props) {
   const [filter, setFilter] = useState("");
+  const pinnedQueries = usePinnedQueries();
   const [expandedConns, setExpandedConns] = useState<Set<string>>(new Set());
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [dbs, setDbs] = useState<Record<string, DatabaseInfo[]>>({});
@@ -210,6 +215,19 @@ export function Sidebar({
     return connections.filter((c) => c.name.toLowerCase().includes(q) || c.host.toLowerCase().includes(q));
   }, [connections, filter]);
 
+  const visiblePins = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return pinnedQueries.filter((p) => {
+      if (!connections.some((c) => c.id === p.connectionId)) return false;
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.sql.toLowerCase().includes(q) ||
+        p.connectionName.toLowerCase().includes(q)
+      );
+    });
+  }, [pinnedQueries, connections, filter]);
+
   const copy = (text: string, label = "Copied to clipboard") => {
     void navigator.clipboard.writeText(text).then(() => toast.success(label));
   };
@@ -269,6 +287,56 @@ export function Sidebar({
             <Button size="sm" variant="outline" className="mt-3 w-full" onClick={onNewConnection}>
               <Plus /> Add connection
             </Button>
+          </div>
+        )}
+
+        {visiblePins.length > 0 && (
+          <div className="mb-2 border-b border-sidebar-border pb-1.5">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Pin className="h-3 w-3" /> Pinned queries
+            </div>
+            {visiblePins.map((p) => {
+              const conn = connections.find((c) => c.id === p.connectionId);
+              return (
+                <ContextMenu key={p.id}>
+                  <ContextMenuTrigger asChild>
+                    <div
+                      className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] hover:bg-sidebar-accent"
+                      title={p.sql}
+                      onClick={() => conn && onNewQuery(conn, p.database, p.sql)}
+                    >
+                      <Pin className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                      <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                      <button
+                        className="rounded p-0.5 opacity-0 transition-opacity hover:bg-background/60 group-hover:opacity-100"
+                        title="Unpin"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          unpinQuery(p.id);
+                        }}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => conn && onNewQuery(conn, p.database, p.sql)}>
+                      <Terminal /> Open query
+                    </ContextMenuItem>
+                    <ContextMenuItem onClick={() => copy(p.sql, "SQL copied")}>
+                      <Copy /> Copy SQL
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onClick={() => unpinQuery(p.id)}
+                    >
+                      <PinOff /> Unpin
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
+              );
+            })}
           </div>
         )}
 

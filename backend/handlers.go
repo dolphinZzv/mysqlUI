@@ -16,6 +16,7 @@ type Server struct {
 	store    *Store
 	versions *SchemaVersionStore
 	auth     *authManager
+	updates  *updateManager
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -26,6 +27,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})
+
+	// self-update
+	mux.HandleFunc("GET /api/update", s.updateStatusHandler)
+	mux.HandleFunc("PUT /api/update", s.updateSettingsHandler)
+	mux.HandleFunc("POST /api/update/check", s.updateCheckHandler)
+	mux.HandleFunc("POST /api/update/apply", s.updateApplyHandler)
+	mux.HandleFunc("POST /api/update/restart", s.updateRestartHandler)
 
 	mux.HandleFunc("GET /api/connections", s.listConnections)
 	mux.HandleFunc("GET /api/connections/{id}", s.getConnection)

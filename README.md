@@ -41,11 +41,15 @@ shipped as a **single binary** with the UI embedded.
   and comments are ignored, and each statement runs on the same connection so
   session state (`USE`, temporary tables, variables) carries across. Multiple
   result sets are capped in memory and selectable in the UI. A `.sql` file can
-  also be imported and executed directly from the editor toolbar.
+  also be imported and executed directly from the editor toolbar, and queries
+  can be pinned to the sidebar for one-click reuse.
 - **Export** — download a table as CSV / JSON / SQL, or an entire database as SQL.
 - **Import / restore** — load CSV into a table (with header mapping, truncate,
   delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
   understands comments, quotes and `DELIMITER` for routines).
+- **Self-update** — `mysqlui update` downloads and verifies the latest release and
+  atomically replaces the binary. Automatic updates check every 10 minutes by
+  default and can be disabled or re-scheduled from the **… → Update** dialog.
 - **Server monitor** — overview metrics, live process list with kill / kill query,
   and searchable status/variable tables.
 - **Users & privileges** — list users, `SHOW GRANTS`, create/alter/drop users and
@@ -134,9 +138,10 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MYSQLUI_ADDR` | `:8787` | Address the HTTP server listens on. |
-| `MYSQLUI_DATA_DIR` | `data` | Directory holding `connections.json`. |
+| `MYSQLUI_DATA_DIR` | `data` | Directory holding `connections.json`, `updates.json`, snapshots and keys. |
 | `MYSQLUI_PID_FILE` | `<data>/mysqlui.pid` | PID file used by the daemon commands. |
 | `MYSQLUI_LOG_FILE` | `<data>/mysqlui.log` | Log file for daemon mode. |
+| `GITHUB_TOKEN` | *(unset)* | Optional token used by update checks to avoid GitHub API rate limits. |
 | `MYSQLUI_AUTH_PASSWORD` | *(unset)* | When set, the UI/API requires this password to sign in. |
 | `MYSQLUI_TOTP_SECRET` | *(unset)* | Base32 TOTP secret (RFC 6238). When set, sign-in also requires a rotating 6-digit code. |
 | `MYSQLUI_AUTH_SECRET` | *(random)* | Secret used to sign session tokens (persisted to `<data>/auth.secret`). |
@@ -235,6 +240,20 @@ mysqlui install-service           # systemd user unit (Linux) or launchd agent (
 mysqlui install-service --system  # systemd system unit (Linux, needs sudo)
 mysqlui install-service --print   # print the unit file without writing it
 ```
+
+### Update the binary
+
+The release checksum is verified before the binary is replaced:
+
+```bash
+mysqlui update                 # install the latest release
+mysqlui update --check         # only check, do not install
+mysqlui update --version v0.6.0
+mysqlui update --force         # reinstall even when already current
+```
+
+Automatic updates are enabled by default with a 10-minute interval. Change the
+interval or turn them off under **… → Update** in the web UI.
 
 Linux (user unit):
 

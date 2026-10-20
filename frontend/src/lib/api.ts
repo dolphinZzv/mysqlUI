@@ -1,4 +1,6 @@
 import type {
+  UpdateApplyResult,
+  UpdateStatus,
   AuthStatus,
   CellValue,
   ColumnDefInput,
@@ -242,6 +244,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ sql }),
     }),
+
+  // self-update
+  updateStatus: () => request<UpdateStatus>("/update"),
+  setUpdateSettings: (enabled: boolean, intervalMinutes: number) =>
+    request<UpdateStatus>("/update", {
+      method: "PUT",
+      body: JSON.stringify({ enabled, intervalMinutes }),
+    }),
+  checkUpdate: () => request<UpdateStatus>("/update/check", { method: "POST" }),
+  applyUpdate: () => request<UpdateApplyResult>("/update/apply", { method: "POST" }),
+  restartUpdate: () => request<{ ok: boolean }>("/update/restart", { method: "POST" }),
 
   // server monitor
   processList: (id: string) => request<ProcessInfo[]>(`${connBase(id)}/monitor/processlist`),

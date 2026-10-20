@@ -5,9 +5,11 @@ import {
   Languages,
   LogOut,
   Moon,
+  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  RefreshCw,
   Search,
   Server,
   Sun,
@@ -21,6 +23,14 @@ import { tableTabId, genericTabId, type GenericTabKind, type TabDef } from "@/li
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Sidebar } from "@/components/Sidebar";
 import { ConnectionDialog } from "@/components/ConnectionDialog";
@@ -35,6 +45,7 @@ import { SchemaVersionsView } from "@/components/SchemaVersionsView";
 import { ObjectSearch } from "@/components/ObjectSearch";
 import { ImportDialog } from "@/components/ImportDialog";
 import { LoginScreen } from "@/components/LoginScreen";
+import { UpdateDialog } from "@/components/UpdateDialog";
 import { useRouter, sameRoute, type Route } from "@/lib/router";
 
 const THEME_KEY = "mysqlui.theme";
@@ -126,6 +137,7 @@ export default function App() {
   const [editing, setEditing] = useState<Connection | null>(null);
   const [appVersion, setAppVersion] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [importState, setImportState] = useState<{
     open: boolean;
     connection: Connection | null;
@@ -453,25 +465,35 @@ export default function App() {
             >
               <Plus /> {t("app.newConnection", "New connection")}
             </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              title={t("app.language", "Language")}
-              onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-            >
-              <Languages />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              title={t("app.toggleTheme", "Toggle theme")}
-              onClick={() => setTheme((v) => (v === "dark" ? "light" : "dark"))}
-            >
-              {theme === "dark" ? <Sun /> : <Moon />}
-            </Button>
-            <Button size="icon-sm" variant="ghost" title={t("app.logout", "Sign out")} onClick={() => void handleLogout()}>
-              <LogOut />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon-sm" variant="ghost" title={t("app.more", "More")}>
+                  <MoreVertical />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuLabel>{t("app.preferences", "Preferences")}</DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => setLang(lang === "zh" ? "en" : "zh")}>
+                  <Languages />
+                  {t("app.language", "Language")}
+                  <span className="ml-auto text-xs text-muted-foreground">{lang === "zh" ? "中文" : "EN"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setTheme((v) => (v === "dark" ? "light" : "dark"))}>
+                  {theme === "dark" ? <Sun /> : <Moon />}
+                  {theme === "dark" ? t("app.themeLight", "Light theme") : t("app.themeDark", "Dark theme")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setUpdateOpen(true)}>
+                  <RefreshCw /> {t("app.update", "Update")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onClick={() => void handleLogout()}
+                >
+                  <LogOut /> {t("app.logout", "Sign out")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
@@ -580,6 +602,7 @@ export default function App() {
       </div>
 
       <ConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} connection={editing} onSaved={refreshConnections} />
+      <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} />
 
       <ObjectSearch
         open={searchOpen}

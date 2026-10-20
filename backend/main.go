@@ -45,7 +45,8 @@ func runServer() {
 	}
 
 	auth := newAuthManager(dir)
-	srv := &Server{store: store, versions: versions, auth: auth}
+	updates := newUpdateManager(dir)
+	srv := &Server{store: store, versions: versions, auth: auth, updates: updates}
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -86,10 +87,15 @@ func runServer() {
 		}
 	}()
 
+	updateCtx, cancelUpdates := context.WithCancel(context.Background())
+	defer cancelUpdates()
+	go updates.run(updateCtx)
+
 	// Wait for a termination signal and shut down gracefully.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
+	cancelUpdates()
 	log.Printf("shutting down...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

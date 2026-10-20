@@ -371,3 +371,24 @@ export interface DefinitionResult {
   ddl: string;
   row: unknown[];
 }
+
+export interface UpdateStatus {
+  currentVersion: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  enabled: boolean;
+  intervalMinutes: number;
+  lastChecked?: string;
+  lastError?: string;
+  installedVersion?: string;
+  restartRequired: boolean;
+  canRestart: boolean;
+  releaseUrl?: string;
+  devBuild: boolean;
+}
+
+export interface UpdateApplyResult {
+  installed: string;
+  restartRequired: boolean;
+  canRestart: boolean;
+}

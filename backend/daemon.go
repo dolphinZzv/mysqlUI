@@ -95,6 +95,7 @@ Usage:
   mysqlui start              Start as a background daemon
   mysqlui stop               Stop the daemon
   mysqlui restart            Restart the daemon
+  mysqlui update             Update to the latest release
   mysqlui status             Show daemon status
   mysqlui install-service    Install as a system service (systemd / launchd)
   mysqlui help               Show this help
@@ -126,6 +127,9 @@ func handleDaemonCommand(args []string) bool {
 	case "restart":
 		stopDaemon()
 		startDaemon()
+		return true
+	case "update":
+		runUpdateCommand(args[1:])
 		return true
 	case "status":
 		statusDaemon()

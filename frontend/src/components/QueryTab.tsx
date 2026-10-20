@@ -14,6 +14,8 @@ import {
   Hammer,
   History,
   Loader2,
+  Pin,
+  PinOff,
   Play,
   Server,
   Star,
@@ -26,6 +28,7 @@ import { api } from "@/lib/api";
 import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
 import type { QueryTabDef } from "@/lib/tabs";
 import { useI18n } from "@/lib/i18n";
+import { findPinnedQuery, pinQuery, unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -107,6 +110,8 @@ export function QueryTab({ tab, connections }: Props) {
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
   const [favorites, setFavorites] = useState<string[]>(() => loadJSON<string[]>(FAVORITES_KEY, []));
+  const pinnedQueries = usePinnedQueries();
+  const pinnedQuery = findPinnedQuery(pinnedQueries, connectionId, database, sql.trim());
   const [builderOpen, setBuilderOpen] = useState(false);
   const [view, setView] = useState<"table" | "chart">("table");
   const [explainOpen, setExplainOpen] = useState(false);
@@ -246,6 +251,23 @@ export function QueryTab({ tab, connections }: Props) {
     });
   };
 
+  const togglePin = () => {
+    const text = sql.trim();
+    if (!text || !connectionId) return;
+    if (pinnedQuery) {
+      unpinQuery(pinnedQuery.id);
+      toast.success(t("query.unpinned", "Unpinned from sidebar"));
+      return;
+    }
+    pinQuery({
+      sql: text,
+      connectionId,
+      connectionName: connection?.name ?? tab.connectionName,
+      database,
+    });
+    toast.success(t("query.pinned", "Pinned to sidebar"));
+  };
+
   const rowRecords = useMemo(() => {
     if (!currentResult) return [];
     return currentResult.rows.map((row) =>
@@ -296,6 +318,15 @@ export function QueryTab({ tab, connections }: Props) {
           </Button>
           <Button size="sm" variant="outline" onClick={toggleFavorite} disabled={!sql.trim()}>
             <Star className={cn(favorites.includes(sql) && "fill-amber-400 text-amber-400")} />
+          </Button>
+          <Button
+            size="sm"
+            variant={pinnedQuery ? "default" : "outline"}
+            onClick={togglePin}
+            disabled={!sql.trim() || !connectionId}
+            title={pinnedQuery ? t("query.unpin", "Unpin from sidebar") : t("query.pin", "Pin to sidebar")}
+          >
+            {pinnedQuery ? <PinOff /> : <Pin />}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
