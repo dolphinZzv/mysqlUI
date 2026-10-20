@@ -68,7 +68,9 @@ func (e *ConnEntry) dsn(database, network string) string {
 	cfg.Loc = time.Local
 	cfg.Params = map[string]string{"charset": "utf8mb4"}
 	cfg.Timeout = 10 * time.Second
-	cfg.ReadTimeout = 60 * time.Second
+	// Long-running queries are bounded by the per-request context (the query
+	// console exposes an optional timeout and a cancel button).
+	cfg.ReadTimeout = 0
 	cfg.WriteTimeout = 60 * time.Second
 	if e.Info.SSL != "" && e.Info.SSL != "disabled" {
 		cfg.TLSConfig = e.Info.SSL

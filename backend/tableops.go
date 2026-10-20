@@ -191,6 +191,19 @@ func (s *Server) exportTable(w http.ResponseWriter, r *http.Request) {
 	case "sql":
 		w.Header().Set("Content-Type", "application/sql; charset=utf-8")
 		w.Header().Set("Content-Disposition", contentDisposition(table+".sql"))
+		var objectType string
+		_ = db.QueryRowContext(r.Context(), `SELECT TABLE_TYPE FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).Scan(&objectType)
+		if strings.EqualFold(objectType, "VIEW") {
+			create, err := showCreateSQL(r.Context(), db, "SHOW CREATE VIEW "+qualify(dbName, table))
+			if err != nil {
+				writeErr(w, http.StatusBadGateway, err)
+				return
+			}
+			fmt.Fprintf(w, "--\n-- View structure for `%s`\n--\nDROP VIEW IF EXISTS %s;\n%s;\n",
+				table, qualify(dbName, table), trimStatement(create))
+			return
+		}
 		_ = streamTableSQL(w, db, dbName, table, columns, rows)
 	default:
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unsupported format %q", format))
@@ -211,43 +224,11 @@ func (s *Server) exportDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.QueryContext(r.Context(), `
-		SELECT TABLE_NAME FROM information_schema.TABLES
-		WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-		ORDER BY TABLE_NAME`, dbName)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err == nil {
-			names = append(names, n)
-		}
-	}
-	rows.Close()
-
 	w.Header().Set("Content-Type", "application/sql; charset=utf-8")
 	w.Header().Set("Content-Disposition", contentDisposition(dbName+".sql"))
-
-	fmt.Fprintf(w, "-- MySQL UI dump\n-- Database: %s\n-- Generated: %s\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n",
+	fmt.Fprintf(w, "-- MySQL UI dump\n-- Database: %s\n-- Generated: %s\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n",
 		dbName, time.Now().Format("2006-01-02 15:04:05"))
-
-	for _, name := range names {
-		dataRows, err := db.QueryContext(r.Context(), "SELECT * FROM "+qualify(dbName, name))
-		if err != nil {
-			fmt.Fprintf(w, "-- skipping %s: %s\n\n", name, err)
-			continue
-		}
-		columns, err := dataRows.Columns()
-		if err != nil {
-			dataRows.Close()
-			continue
-		}
-		_ = streamTableSQL(w, db, dbName, name, columns, dataRows)
-		dataRows.Close()
-	}
+	writeDatabaseDump(r.Context(), w, db, dbName)
 	fmt.Fprint(w, "SET FOREIGN_KEY_CHECKS=1;\n")
 }
 
@@ -647,7 +628,13 @@ func (s *Server) dropTable(w http.ResponseWriter, r *http.Request) {
 	if !ok || table == "" {
 		return
 	}
+	var tableType string
+	_ = db.QueryRowContext(r.Context(), `SELECT TABLE_TYPE FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).Scan(&tableType)
 	q := "DROP TABLE " + qualify(dbName, table)
+	if strings.EqualFold(tableType, "VIEW") {
+		q = "DROP VIEW " + qualify(dbName, table)
+	}
 	if _, err := db.ExecContext(r.Context(), q); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

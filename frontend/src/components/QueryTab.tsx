@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
+  ArrowLeftRight,
   BarChart3,
   CheckCircle2,
   Clock,
@@ -18,8 +19,10 @@ import {
   PinOff,
   Play,
   Server,
+  Square,
   Star,
   Table2,
+  Timer,
   Trash2,
   TrendingUp,
   Upload,
@@ -54,6 +57,7 @@ interface Props {
 
 const HISTORY_KEY = "mysqlui.queryHistory";
 const FAVORITES_KEY = "mysqlui.favorites";
+const TIMEOUT_KEY = "mysqlui.queryTimeout";
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -116,6 +120,18 @@ export function QueryTab({ tab, connections }: Props) {
   const [view, setView] = useState<"table" | "chart">("table");
   const [explainOpen, setExplainOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sessionIdRef = useRef("");
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = `qs:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+  }
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const canceledRef = useRef(false);
+  const [timeoutSec, setTimeoutSec] = useState(() => {
+    const stored = Number(localStorage.getItem(TIMEOUT_KEY));
+    return [0, 30, 60, 300].includes(stored) ? stored : 60;
+  });
+  const [inTransaction, setInTransaction] = useState(false);
+  const [txBusy, setTxBusy] = useState(false);
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -146,6 +162,10 @@ export function QueryTab({ tab, connections }: Props) {
   }, [connections, connectionId]);
 
   useEffect(() => {
+    setInTransaction(false);
+  }, [connectionId, database]);
+
+  useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { id: string; sql: string };
       if (detail?.id === tab.id) setSql(detail.sql);
@@ -169,23 +189,62 @@ export function QueryTab({ tab, connections }: Props) {
       toast.error(t("query.connection", "Connection") + " ?");
       return;
     }
+    const runId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+    canceledRef.current = false;
+    setActiveRunId(runId);
     setRunning(true);
     setError(null);
     try {
-      const res = await api.runQuery(connectionId, database, text);
+      const res = await api.runQuery(connectionId, database, text, {
+        runId,
+        sessionId: sessionIdRef.current,
+        timeoutSec,
+      });
       setResult(res);
       const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
       setActiveResult(Math.max(0, count - 1));
+      if (/^\s*(BEGIN|START\s+TRANSACTION)\b/i.test(text)) setInTransaction(true);
+      else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(text)) setInTransaction(false);
       pushHistory(text);
     } catch (err) {
       setResult(null);
       setActiveResult(0);
-      setError(err instanceof Error ? err.message : String(err));
+      if (canceledRef.current) setInTransaction(false);
+      setError(canceledRef.current ? t("query.canceled", "Query canceled") : err instanceof Error ? err.message : String(err));
     } finally {
+      setActiveRunId(null);
       setRunning(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sql, connectionId, database, t]);
+  }, [sql, connectionId, database, timeoutSec, t]);
+
+  const cancel = useCallback(async () => {
+    if (!activeRunId || !connectionId) return;
+    canceledRef.current = true;
+    try {
+      await api.cancelQuery(connectionId, activeRunId);
+      toast.info(t("query.canceled", "Query canceled"));
+    } catch (err) {
+      toast.error(t("common.error", "Error"), { description: err instanceof Error ? err.message : String(err) });
+    }
+  }, [activeRunId, connectionId, t]);
+
+  const transaction = useCallback(
+    async (command: "START TRANSACTION" | "COMMIT" | "ROLLBACK") => {
+      if (!connectionId) return;
+      setTxBusy(true);
+      try {
+        await api.runQuery(connectionId, database, command, { sessionId: sessionIdRef.current, timeoutSec: 30 });
+        setInTransaction(command === "START TRANSACTION");
+        toast.success(t("query.txDone", "Transaction command executed"));
+      } catch (err) {
+        toast.error(t("common.error", "Error"), { description: err instanceof Error ? err.message : String(err) });
+      } finally {
+        setTxBusy(false);
+      }
+    },
+    [connectionId, database, timeoutSec, t],
+  );
 
   const runFile = useCallback(
     async (file: File) => {
@@ -307,7 +366,55 @@ export function QueryTab({ tab, connections }: Props) {
           </SelectContent>
         </Select>
 
+        <Select
+          value={String(timeoutSec)}
+          onValueChange={(v) => {
+            const n = Number(v);
+            setTimeoutSec(n);
+            localStorage.setItem(TIMEOUT_KEY, String(n));
+          }}
+        >
+          <SelectTrigger className="h-8 w-[126px] text-xs" title={t("query.timeout", "Query timeout")}>
+            <Timer className="mr-1 h-3.5 w-3.5 text-muted-foreground" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="0">{t("query.timeoutNone", "No timeout")}</SelectItem>
+            <SelectItem value="30">30 s</SelectItem>
+            <SelectItem value="60">60 s</SelectItem>
+            <SelectItem value="300">5 min</SelectItem>
+          </SelectContent>
+        </Select>
+
         <div className="ml-auto flex items-center gap-1.5">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant={inTransaction ? "default" : "outline"} disabled={running || txBusy || !connectionId}>
+                {txBusy ? <Loader2 className="animate-spin" /> : <ArrowLeftRight />}
+                {inTransaction ? t("query.inTransaction", "In transaction") : t("query.transaction", "Tx")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                disabled={inTransaction || running || txBusy}
+                onClick={() => void transaction("START TRANSACTION")}
+              >
+                {t("query.begin", "Begin")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!inTransaction || running || txBusy}
+                onClick={() => void transaction("COMMIT")}
+              >
+                {t("query.commit", "Commit")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!inTransaction || running || txBusy}
+                onClick={() => void transaction("ROLLBACK")}
+              >
+                {t("query.rollback", "Rollback")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             size="sm"
             variant={builderOpen ? "default" : "outline"}
@@ -387,15 +494,21 @@ export function QueryTab({ tab, connections }: Props) {
             size="sm"
             variant="outline"
             onClick={() => fileInputRef.current?.click()}
-            disabled={running || !connectionId}
+            disabled={running || txBusy || !connectionId}
             title={t("query.importSqlHint", "Execute a .sql file")}
           >
             <Upload /> {t("query.importSql", "Import SQL")}
           </Button>
-          <Button size="sm" onClick={run} disabled={running || !connectionId}>
-            {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
-            <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
-          </Button>
+          {running && activeRunId ? (
+            <Button size="sm" variant="destructive" onClick={() => void cancel()}>
+              <Square /> {t("query.cancel", "Cancel")}
+            </Button>
+          ) : (
+            <Button size="sm" onClick={run} disabled={running || txBusy || !connectionId}>
+              {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
+              <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
+            </Button>
+          )}
         </div>
       </div>
 

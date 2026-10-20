@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Activity, Gauge, Loader2, RefreshCw, Search, Skull, X } from "lucide-react";
+import { Activity, Gauge, GitBranch, Loader2, RefreshCw, Search, Skull, Timer, X } from "lucide-react";
 import { api } from "@/lib/api";
-import type { MonitorOverview, NameValue, ProcessInfo } from "@/lib/types";
+import type { MonitorOverview, NameValue, ProcessInfo, ReplicationStatus, SlowQueryInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,8 @@ export function MonitorTab({ connectionId }: Props) {
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [status, setStatus] = useState<NameValue[]>([]);
   const [variables, setVariables] = useState<NameValue[]>([]);
+  const [replication, setReplication] = useState<ReplicationStatus | null>(null);
+  const [slow, setSlow] = useState<SlowQueryInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState("");
@@ -53,9 +55,28 @@ export function MonitorTab({ connectionId }: Props) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [ov, pl] = await Promise.all([api.monitorOverview(connectionId), api.processList(connectionId)]);
+      const [ov, pl, rep, slowInfo] = await Promise.all([
+        api.monitorOverview(connectionId),
+        api.processList(connectionId),
+        api.replicationStatus(connectionId).catch(() => ({
+          role: "unknown",
+          master: [],
+          replica: [],
+          replicas: [],
+          error: "Unable to load replication status",
+        })),
+        api.slowQueries(connectionId).catch(() => ({
+          enabled: false,
+          longQueryTime: 0,
+          logFile: "",
+          rows: [],
+          error: "Unable to load slow query data",
+        })),
+      ]);
       setOverview(ov);
       setProcesses(pl);
+      setReplication(rep);
+      setSlow(slowInfo);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -158,6 +179,14 @@ export function MonitorTab({ connectionId }: Props) {
             <TabsTrigger value="variables" className="text-xs">
               {t("monitor.variables", "Variables")}
             </TabsTrigger>
+            <TabsTrigger value="replication" className="text-xs">
+              <GitBranch className="mr-1.5 h-3.5 w-3.5" />
+              {t("monitor.replication", "Replication")}
+            </TabsTrigger>
+            <TabsTrigger value="slow" className="text-xs">
+              <Timer className="mr-1.5 h-3.5 w-3.5" />
+              {t("monitor.slowQueries", "Slow queries")}
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="processes" className="mt-3">
@@ -215,6 +244,12 @@ export function MonitorTab({ connectionId }: Props) {
           <TabsContent value="variables" className="mt-3">
             <KVList items={filterKV(variables)} />
           </TabsContent>
+          <TabsContent value="replication" className="mt-3">
+            <ReplicationView data={replication} />
+          </TabsContent>
+          <TabsContent value="slow" className="mt-3">
+            <SlowQueriesView data={slow} />
+          </TabsContent>
         </Tabs>
 
         {(status.length > 0 || variables.length > 0) && (
@@ -262,6 +297,127 @@ export function MonitorTab({ connectionId }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function objectValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function MapTable({ title, rows }: { title: string; rows: Record<string, unknown>[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="mb-4">
+      <div className="mb-2 text-xs font-semibold text-muted-foreground">{title}</div>
+      {rows.map((row, i) => (
+        <div key={i} className="mb-2 overflow-hidden rounded-lg border">
+          <table className="w-full text-[12px]">
+            <tbody>
+              {Object.entries(row).map(([k, v]) => (
+                <tr key={k} className="border-t first:border-0 hover:bg-muted/30">
+                  <td className="w-1/3 px-3 py-1 font-mono text-sky-400">{k}</td>
+                  <td className="px-3 py-1 font-mono break-all text-muted-foreground">{objectValue(v)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReplicationView({ data }: { data: ReplicationStatus | null }) {
+  const { t } = useI18n();
+  if (!data) {
+    return <div className="p-6 text-center text-sm text-muted-foreground">{t("common.loading", "Loading…")}</div>;
+  }
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2 text-sm">
+        <span className="text-muted-foreground">{t("monitor.role", "Role")}</span>
+        <Badge variant={data.role === "replica" ? "warning" : data.role === "primary" ? "success" : "secondary"}>
+          {data.role}
+        </Badge>
+      </div>
+      {data.error && <p className="mb-3 break-all text-xs text-destructive">{data.error}</p>}
+      {data.role === "standalone" && !data.error && (
+        <p className="mb-3 text-sm text-muted-foreground">{t("monitor.noReplication", "No replication is configured.")}</p>
+      )}
+      <MapTable title={t("monitor.masterStatus", "Primary / binary log")} rows={data.master} />
+      <MapTable title={t("monitor.replicaStatus", "Replica status")} rows={data.replica} />
+      <MapTable title={t("monitor.replicas", "Connected replicas")} rows={data.replicas} />
+    </div>
+  );
+}
+
+function slowNumber(v: unknown): string {
+  if (typeof v === "number") return formatNumber(Math.round(v));
+  if (v === null || v === undefined) return "-";
+  return String(v);
+}
+
+function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
+  const { t } = useI18n();
+  if (!data) {
+    return <div className="p-6 text-center text-sm text-muted-foreground">{t("common.loading", "Loading…")}</div>;
+  }
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        <Badge variant={data.enabled ? "success" : "secondary"}>
+          slow_query_log {data.enabled ? "ON" : "OFF"}
+        </Badge>
+        <Badge variant="outline">long_query_time {data.longQueryTime}s</Badge>
+        {data.logFile && <span className="font-mono text-muted-foreground">{data.logFile}</span>}
+      </div>
+      {data.error && <p className="mb-3 break-all text-xs text-destructive">{data.error}</p>}
+      <div className="overflow-hidden rounded-lg border">
+        <table className="w-full text-[12px]">
+          <thead className="bg-muted/50 text-left text-muted-foreground">
+            <tr>
+              <th className="px-2 py-2 font-medium">SQL digest</th>
+              <th className="px-2 py-2 font-medium">Count</th>
+              <th className="px-2 py-2 font-medium">Avg ms</th>
+              <th className="px-2 py-2 font-medium">Max ms</th>
+              <th className="px-2 py-2 font-medium">Rows examined</th>
+              <th className="px-2 py-2 font-medium">Rows sent</th>
+              <th className="px-2 py-2 font-medium">Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.map((row, i) => (
+              <tr key={i} className="border-t hover:bg-muted/30">
+                <td className="max-w-[520px] px-2 py-1.5 font-mono text-[11px]">
+                  <span className="block truncate" title={String(row.DIGEST_TEXT ?? "")}>
+                    {String(row.DIGEST_TEXT ?? "")}
+                  </span>
+                </td>
+                <td className="px-2 py-1.5 tabular-nums">{slowNumber(row.COUNT_STAR)}</td>
+                <td className="px-2 py-1.5 tabular-nums">
+                  {typeof row.AVG_TIMER_WAIT_MS === "number" ? row.AVG_TIMER_WAIT_MS.toFixed(2) : "-"}
+                </td>
+                <td className="px-2 py-1.5 tabular-nums">
+                  {typeof row.MAX_TIMER_WAIT_MS === "number" ? row.MAX_TIMER_WAIT_MS.toFixed(2) : "-"}
+                </td>
+                <td className="px-2 py-1.5 tabular-nums">{slowNumber(row.SUM_ROWS_EXAMINED)}</td>
+                <td className="px-2 py-1.5 tabular-nums">{slowNumber(row.SUM_ROWS_SENT)}</td>
+                <td className="px-2 py-1.5 text-muted-foreground">{String(row.LAST_SEEN ?? "-")}</td>
+              </tr>
+            ))}
+            {data.rows.length === 0 && !data.error && (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
+                  {t("monitor.noSlowQueries", "No statement digests available.")}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

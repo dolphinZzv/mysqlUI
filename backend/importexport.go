@@ -491,7 +491,8 @@ func (s *Server) exportServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.QueryContext(r.Context(), `
+	ctx := r.Context()
+	rows, err := db.QueryContext(ctx, `
 		SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME`)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -511,39 +512,11 @@ func (s *Server) exportServer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/sql; charset=utf-8")
 	w.Header().Set("Content-Disposition", contentDisposition(entry.Info.Name+".sql"))
 
-	fmt.Fprintf(w, "-- MySQL UI full dump\n-- Generated: %s\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n",
+	fmt.Fprintf(w, "-- MySQL UI full dump\n-- Generated: %s\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n",
 		time.Now().Format("2006-01-02 15:04:05"))
 
 	for _, schema := range schemas {
-		fmt.Fprintf(w, "-- Database: %s\nCREATE DATABASE IF NOT EXISTS %s;\nUSE %s;\n\n",
-			schema, quoteIdent(schema), quoteIdent(schema))
-		tables, err := db.QueryContext(r.Context(), `
-			SELECT TABLE_NAME FROM information_schema.TABLES
-			WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-			ORDER BY TABLE_NAME`, schema)
-		if err != nil {
-			continue
-		}
-		var names []string
-		for tables.Next() {
-			var n string
-			if err := tables.Scan(&n); err == nil {
-				names = append(names, n)
-			}
-		}
-		tables.Close()
-		for _, name := range names {
-			dataRows, err := db.QueryContext(r.Context(), "SELECT * FROM "+qualify(schema, name))
-			if err != nil {
-				fmt.Fprintf(w, "-- skipping %s.%s: %s\n\n", schema, name, err)
-				continue
-			}
-			cols, err := dataRows.Columns()
-			if err == nil {
-				_ = streamTableSQL(w, db, schema, name, cols, dataRows)
-			}
-			dataRows.Close()
-		}
+		writeDatabaseDump(ctx, w, db, schema)
 	}
 	fmt.Fprint(w, "SET FOREIGN_KEY_CHECKS=1;\n")
 }

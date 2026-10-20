@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Server struct {
@@ -17,6 +20,19 @@ type Server struct {
 	versions *SchemaVersionStore
 	auth     *authManager
 	updates  *updateManager
+
+	queries     sync.Map
+	sessions    *querySessionManager
+	sessionOnce sync.Once
+}
+
+func (s *Server) sessionManager() *querySessionManager {
+	s.sessionOnce.Do(func() {
+		if s.sessions == nil {
+			s.sessions = newQuerySessionManager()
+		}
+	})
+	return s.sessions
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -44,6 +60,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/test", s.testExistingConnection)
 	mux.HandleFunc("GET /api/connections/{id}/info", s.serverInfo)
 	mux.HandleFunc("GET /api/connections/{id}/databases", s.listDatabases)
+	mux.HandleFunc("POST /api/connections/{id}/databases", s.createDatabase)
+	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}", s.dropDatabase)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/export", s.exportDatabase)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables", s.listTables)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/schema", s.databaseSchema)
@@ -64,6 +82,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-delete", s.deleteRows)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
+	mux.HandleFunc("POST /api/connections/{id}/query/{runId}/cancel", s.cancelQueryHandler)
 	mux.HandleFunc("POST /api/connections/{id}/query/file", s.runQueryFile)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/query/file", s.runQueryFile)
 
@@ -72,6 +91,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/monitor/overview", s.monitorOverview)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/status", s.monitorStatus)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/variables", s.monitorVariables)
+	mux.HandleFunc("GET /api/connections/{id}/monitor/replication", s.replicationStatus)
+	mux.HandleFunc("GET /api/connections/{id}/monitor/slow-queries", s.slowQueries)
 	mux.HandleFunc("DELETE /api/connections/{id}/monitor/process/{pid}", s.monitorKill)
 
 	// import / backup
@@ -103,6 +124,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/events/{name}/definition", s.eventDefinition)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/events/{name}", s.dropEvent)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/ddl", s.executeDDL)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/views", s.saveView)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/objects", s.saveObject)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/foreign-keys", s.addForeignKey)
+	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/foreign-keys/{name}", s.dropForeignKey)
 
 	// global search / ERD / schema diff
 	mux.HandleFunc("GET /api/connections/{id}/search", s.globalSearch)
@@ -362,6 +387,69 @@ var systemSchemas = map[string]bool{
 	"sys":                true,
 }
 
+func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
+	entry, ok := s.entry(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Name      string `json:"name"`
+		Charset   string `json:"charset"`
+		Collation string `json:"collation"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if !validIdent(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid database name %q", name))
+		return
+	}
+	if systemSchemas[strings.ToLower(name)] {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is a reserved system database", name))
+		return
+	}
+	charset := strings.TrimSpace(in.Charset)
+	collation := strings.TrimSpace(in.Collation)
+	if charset == "" && collation == "" {
+		charset = "utf8mb4"
+		collation = "utf8mb4_unicode_ci"
+	}
+	if charset != "" && !validIdent(charset) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid charset %q", charset))
+		return
+	}
+	if collation != "" && !validIdent(collation) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid collation %q", collation))
+		return
+	}
+	q := "CREATE DATABASE " + quoteIdent(name)
+	if charset != "" {
+		q += " CHARACTER SET " + charset
+	}
+	if collation != "" {
+		q += " COLLATE " + collation
+	}
+	db, ok := s.db(w, r, entry, "")
+	if !ok {
+		return
+	}
+	if _, err := db.ExecContext(r.Context(), q); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"name":      name,
+		"charset":   charset,
+		"collation": collation,
+	})
+}
+
 func (s *Server) listDatabases(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.entry(w, r)
 	if !ok {
@@ -468,17 +556,20 @@ type foreignKeyInfo struct {
 	RefTable    string `json:"refTable"`
 	RefColumn   string `json:"refColumn"`
 	Constraint  string `json:"constraint"`
+	OnDelete    string `json:"onDelete"`
+	OnUpdate    string `json:"onUpdate"`
 }
 
 type tableStructureResponse struct {
-	Name        string           `json:"name"`
-	Type        string           `json:"type"`
-	Engine      string           `json:"engine"`
-	Comment     string           `json:"comment"`
-	Columns     []columnInfo     `json:"columns"`
-	Indexes     []indexInfo      `json:"indexes"`
-	ForeignKeys []foreignKeyInfo `json:"foreignKeys"`
-	CreateSQL   string           `json:"createSql"`
+	Name           string           `json:"name"`
+	Type           string           `json:"type"`
+	Engine         string           `json:"engine"`
+	Comment        string           `json:"comment"`
+	Columns        []columnInfo     `json:"columns"`
+	Indexes        []indexInfo      `json:"indexes"`
+	ForeignKeys    []foreignKeyInfo `json:"foreignKeys"`
+	CreateSQL      string           `json:"createSql"`
+	ViewDefinition string           `json:"viewDefinition,omitempty"`
 }
 
 func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
@@ -569,23 +660,36 @@ func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fkRows, err := db.QueryContext(ctx, `
-		SELECT COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, CONSTRAINT_NAME
-		FROM information_schema.KEY_COLUMN_USAGE
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
-		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, dbName, table)
+		SELECT k.COLUMN_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME,
+		       k.CONSTRAINT_NAME, COALESCE(r.DELETE_RULE, ''), COALESCE(r.UPDATE_RULE, '')
+		FROM information_schema.KEY_COLUMN_USAGE k
+		LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS r
+		  ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+		WHERE k.TABLE_SCHEMA = ? AND k.TABLE_NAME = ? AND k.REFERENCED_TABLE_NAME IS NOT NULL
+		ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION`, dbName, table)
 	if err == nil {
 		defer fkRows.Close()
 		for fkRows.Next() {
 			var fk foreignKeyInfo
-			if err := fkRows.Scan(&fk.Column, &fk.RefDatabase, &fk.RefTable, &fk.RefColumn, &fk.Constraint); err == nil {
+			if err := fkRows.Scan(&fk.Column, &fk.RefDatabase, &fk.RefTable, &fk.RefColumn, &fk.Constraint, &fk.OnDelete, &fk.OnUpdate); err == nil {
 				resp.ForeignKeys = append(resp.ForeignKeys, fk)
 			}
 		}
 	}
 
-	var createName, createSQL string
-	if err := db.QueryRowContext(ctx, "SHOW CREATE TABLE "+qualify(dbName, table)).Scan(&createName, &createSQL); err == nil {
-		resp.CreateSQL = createSQL
+	if strings.EqualFold(resp.Type, "VIEW") {
+		if create, err := showCreateSQL(ctx, db, "SHOW CREATE VIEW "+qualify(dbName, table)); err == nil {
+			resp.CreateSQL = create
+		}
+		if err := db.QueryRowContext(ctx, `SELECT VIEW_DEFINITION FROM information_schema.VIEWS
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).Scan(&resp.ViewDefinition); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			resp.ViewDefinition = ""
+		}
+	} else {
+		var createName, createSQL string
+		if err := db.QueryRowContext(ctx, "SHOW CREATE TABLE "+qualify(dbName, table)).Scan(&createName, &createSQL); err == nil {
+			resp.CreateSQL = createSQL
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -962,8 +1066,11 @@ func sortStrings(s []string) {
 // ---- arbitrary SQL ------------------------------------------------------
 
 type queryRequest struct {
-	Database string `json:"database"`
-	SQL      string `json:"sql"`
+	Database   string `json:"database"`
+	SQL        string `json:"sql"`
+	SessionID  string `json:"sessionId,omitempty"`
+	RunID      string `json:"runId,omitempty"`
+	TimeoutSec int    `json:"timeoutSec,omitempty"`
 }
 
 type queryResult struct {
@@ -991,6 +1098,10 @@ const (
 	// maxQueryResultSets bounds how many earlier result sets are retained.
 	maxQueryResultSets = 20
 )
+
+func (s *Server) cancelQueryHandler(w http.ResponseWriter, r *http.Request) {
+	s.cancelRunningQuery(w, r)
+}
 
 func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.entry(w, r)
@@ -1025,19 +1136,65 @@ func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, ok := s.db(w, r, entry, in.Database)
-	if !ok {
-		return
+	var (
+		conn    *sql.Conn
+		session *querySession
+	)
+	if strings.TrimSpace(in.SessionID) != "" {
+		sess, err := s.sessionManager().get(r.Context(), entry, in.Database, in.SessionID)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
+			return
+		}
+		if !sess.runMu.TryLock() {
+			writeErr(w, http.StatusConflict, errors.New("this query session is busy"))
+			return
+		}
+		defer sess.runMu.Unlock()
+		session = sess
+		conn = sess.conn
+	} else {
+		db, ok := s.db(w, r, entry, in.Database)
+		if !ok {
+			return
+		}
+		conn, err = db.Conn(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
+			return
+		}
+		defer conn.Close()
 	}
+
 	ctx := r.Context()
-	// Pin all statements to one connection so session state (USE, temporary
-	// tables, user variables, transactions) behaves like a SQL console.
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
-		return
+	var cancel context.CancelFunc
+	if in.TimeoutSec > 0 {
+		if in.TimeoutSec > 24*60*60 {
+			in.TimeoutSec = 24 * 60 * 60
+		}
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(in.TimeoutSec)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
 	}
-	defer conn.Close()
+	defer cancel()
+
+	runID := strings.TrimSpace(in.RunID)
+	if runID == "" {
+		runID = uuid.NewString()
+	}
+	active := &activeQuery{connectionID: entry.Info.ID, cancel: cancel}
+	s.queries.Store(runID, active)
+	defer s.queries.Delete(runID)
+	if session != nil {
+		session.setActive(active)
+		defer session.clearActive(active)
+	}
+
+	// Remember the MySQL thread id so a cancel request can also issue KILL.
+	var mysqlID int64
+	if err := conn.QueryRowContext(ctx, "SELECT CONNECTION_ID()").Scan(&mysqlID); err == nil {
+		active.setMySQLID(mysqlID)
+	}
 
 	start := time.Now()
 	run := &scriptRun{
@@ -1050,8 +1207,25 @@ func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, errReadOnly)
 			return
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			if session != nil {
+				s.sessionManager().remove(in.SessionID)
+			}
+			writeErr(w, http.StatusGatewayTimeout, errors.New("query timed out"))
+			return
+		}
+		if errors.Is(err, context.Canceled) || active.wasCanceled() {
+			if session != nil {
+				s.sessionManager().remove(in.SessionID)
+			}
+			writeErr(w, http.StatusBadGateway, errors.New("query canceled"))
+			return
+		}
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("executed %d statement(s); %w", run.executed, err))
 		return
+	}
+	if session != nil {
+		session.touch()
 	}
 	writeJSON(w, http.StatusOK, run.result(start))
 }

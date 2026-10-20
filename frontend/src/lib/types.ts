@@ -81,6 +81,8 @@ export interface ForeignKeyInfo {
   refTable: string;
   refColumn: string;
   constraint: string;
+  onDelete: string;
+  onUpdate: string;
 }
 
 export interface TableStructure {
@@ -92,6 +94,7 @@ export interface TableStructure {
   indexes: IndexInfo[];
   foreignKeys: ForeignKeyInfo[];
   createSql: string;
+  viewDefinition?: string;
 }
 
 export interface TableData {
@@ -391,4 +394,20 @@ export interface UpdateApplyResult {
   installed: string;
   restartRequired: boolean;
   canRestart: boolean;
+}
+
+export interface ReplicationStatus {
+  role: string;
+  master: Record<string, unknown>[];
+  replica: Record<string, unknown>[];
+  replicas: Record<string, unknown>[];
+  error?: string;
+}
+
+export interface SlowQueryInfo {
+  enabled: boolean;
+  longQueryTime: number;
+  logFile: string;
+  rows: Record<string, unknown>[];
+  error?: string;
 }

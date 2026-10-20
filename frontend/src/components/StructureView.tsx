@@ -5,7 +5,9 @@ import {
   Copy,
   Database,
   Key,
+  KeyRound,
   Layers,
+  Link2,
   ListTree,
   Loader2,
   Pencil,
@@ -20,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CellValue } from "@/components/CellValue";
 import { ColumnDialog } from "@/components/ColumnDialog";
+import { ViewDialog } from "@/components/ViewDialog";
+import { ForeignKeyDialog } from "@/components/ForeignKeyDialog";
 import {
   Dialog,
   DialogContent,
@@ -55,6 +59,7 @@ interface Props {
 type Pending =
   | { kind: "column"; name: string }
   | { kind: "index"; name: string }
+  | { kind: "foreignKey"; name: string }
   | { kind: "table" }
   | null;
 
@@ -101,6 +106,8 @@ export function StructureView({
   const [indexOpen, setIndexOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [newName, setNewName] = useState(table);
+  const [viewOpen, setViewOpen] = useState(false);
+  const [fkOpen, setFkOpen] = useState(false);
 
   const indexes = useMemo(() => {
     const map = new Map<string, { name: string; unique: boolean; type: string; columns: string[]; cardinality: number | null }>();
@@ -123,6 +130,31 @@ export function StructureView({
     }
     return Array.from(map.values());
   }, [structure.indexes]);
+
+  const foreignKeys = useMemo(() => {
+    const map = new Map<
+      string,
+      { name: string; columns: string[]; refDatabase: string; refTable: string; refColumns: string[]; onDelete: string; onUpdate: string }
+    >();
+    for (const fk of structure.foreignKeys) {
+      let group = map.get(fk.constraint);
+      if (!group) {
+        group = {
+          name: fk.constraint,
+          columns: [],
+          refDatabase: fk.refDatabase,
+          refTable: fk.refTable,
+          refColumns: [],
+          onDelete: fk.onDelete,
+          onUpdate: fk.onUpdate,
+        };
+        map.set(fk.constraint, group);
+      }
+      group.columns.push(fk.column);
+      group.refColumns.push(fk.refColumn);
+    }
+    return [...map.values()];
+  }, [structure.foreignKeys]);
 
   const copyCreate = () => {
     void navigator.clipboard.writeText(structure.createSql).then(() => {
@@ -151,6 +183,8 @@ export function StructureView({
       await run(() => api.dropColumn(connectionId, database, table, pending.name), `Dropped column "${pending.name}"`);
     } else if (pending.kind === "index") {
       await run(() => api.dropIndex(connectionId, database, table, pending.name), `Dropped index "${pending.name}"`);
+    } else if (pending.kind === "foreignKey") {
+      await run(() => api.dropForeignKey(connectionId, database, table, pending.name), `Dropped foreign key "${pending.name}"`);
     } else if (pending.kind === "table") {
       setBusy(true);
       try {
@@ -246,12 +280,20 @@ export function StructureView({
 
         <div className="ml-auto flex items-center gap-2">
           {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-          <Button size="sm" variant="outline" onClick={() => setColumnDialog({ open: true, mode: "add", column: columnDialog.column })}>
-            <Plus /> Column
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => { setIndexDialog({ name: "", unique: false, columns: [], columnsText: "" }); setIndexOpen(true); }}>
-            <Plus /> Index
-          </Button>
+          {structure.type === "VIEW" ? (
+            <Button size="sm" variant="outline" onClick={() => setViewOpen(true)}>
+              <Pencil /> Edit view
+            </Button>
+          ) : (
+            <>
+              <Button size="sm" variant="outline" onClick={() => setColumnDialog({ open: true, mode: "add", column: columnDialog.column })}>
+                <Plus /> Column
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => { setIndexDialog({ name: "", unique: false, columns: [], columnsText: "" }); setIndexOpen(true); }}>
+                <Plus /> Index
+              </Button>
+            </>
+          )}
           <Button size="sm" variant="outline" onClick={() => { setNewName(table); setRenameOpen(true); }}>
             <Pencil /> Rename
           </Button>
@@ -397,6 +439,64 @@ export function StructureView({
         </div>
       </section>
 
+      {structure.type !== "VIEW" && (
+        <section className="mb-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="flex items-center gap-2 text-sm font-semibold">
+              <Link2 className="h-4 w-4 text-muted-foreground" /> Foreign keys
+            </h3>
+            <Button size="sm" variant="outline" onClick={() => setFkOpen(true)}>
+              <Plus /> Foreign key
+            </Button>
+          </div>
+          <div className="overflow-hidden rounded-lg border">
+            <table className="w-full text-[13px]">
+              <thead className="bg-muted/50 text-left text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Constraint</th>
+                  <th className="px-3 py-2 font-medium">Columns</th>
+                  <th className="px-3 py-2 font-medium">References</th>
+                  <th className="px-3 py-2 font-medium">On delete / update</th>
+                  <th className="px-3 py-2 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {foreignKeys.map((fk) => (
+                  <tr key={fk.name} className="group border-t">
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono">{fk.name}</td>
+                    <td className="px-3 py-1.5 font-mono text-sky-400">{fk.columns.join(", ")}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono text-muted-foreground">
+                      {fk.refDatabase}.{fk.refTable} ({fk.refColumns.join(", ")})
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-muted-foreground">
+                      {(fk.onDelete || "RESTRICT") + " / " + (fk.onUpdate || "RESTRICT")}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right">
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        title="Drop foreign key"
+                        className="hover:text-destructive"
+                        onClick={() => setPending({ kind: "foreignKey", name: fk.name })}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+                {foreignKeys.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                      No foreign keys
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section>
         <div className="mb-2 flex items-center justify-between">
           <h3 className="flex items-center gap-2 text-sm font-semibold">
@@ -419,6 +519,26 @@ export function StructureView({
         column={columnDialog.column}
         existingNames={existingNames}
         onSubmit={submitColumn}
+      />
+
+      <ViewDialog
+        open={viewOpen}
+        onOpenChange={setViewOpen}
+        connectionId={connectionId}
+        database={database}
+        view={structure.type === "VIEW" ? table : undefined}
+        initialDefinition={structure.viewDefinition}
+        onSaved={onRefresh}
+      />
+
+      <ForeignKeyDialog
+        open={fkOpen}
+        onOpenChange={setFkOpen}
+        connectionId={connectionId}
+        database={database}
+        table={table}
+        columns={structure.columns}
+        onCreated={onRefresh}
       />
 
       <Dialog open={indexOpen} onOpenChange={setIndexOpen}>
@@ -498,7 +618,9 @@ export function StructureView({
                   ? `Drop column "${pending.name}"?`
                   : pending?.kind === "index"
                     ? `Drop index "${pending.name}"?`
-                    : ""}
+                    : pending?.kind === "foreignKey"
+                      ? `Drop foreign key "${pending.name}"?`
+                      : ""}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pending?.kind === "table"

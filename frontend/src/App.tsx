@@ -393,6 +393,14 @@ export default function App() {
     openQuery(conn, activeTab?.database ?? "");
   }, [connections, tabs, activeId, openQuery, t]);
 
+  const handleDatabaseDropped = useCallback((connectionId: string, database: string) => {
+    const next = tabsRef.current.filter((t) => !(t.connectionId === connectionId && t.database === database));
+    setTabs(next);
+    if (!next.some((t) => t.id === activeIdRef.current)) {
+      setActiveId(next.length ? next[next.length - 1].id : null);
+    }
+  }, []);
+
   const handleDelete = async (connection: Connection) => {
     try {
       await api.deleteConnection(connection.id);
@@ -520,6 +528,7 @@ export default function App() {
                 setEditing(null);
                 setDialogOpen(true);
               }}
+              onDatabaseDropped={handleDatabaseDropped}
             />
               <div
                 role="separator"

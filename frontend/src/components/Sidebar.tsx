@@ -10,6 +10,7 @@ import {
   Database as DatabaseIcon,
   Download,
   Eye,
+  FolderPlus,
   GitCompare,
   History,
   Loader2,
@@ -65,6 +66,8 @@ import {
 } from "@/components/ui/context-menu";
 import { TableDesignerDialog } from "@/components/TableDesignerDialog";
 import { CopyTableDialog } from "@/components/CopyTableDialog";
+import { CreateDatabaseDialog } from "@/components/CreateDatabaseDialog";
+import { ViewDialog } from "@/components/ViewDialog";
 
 interface Props {
   connections: Connection[];
@@ -77,6 +80,7 @@ interface Props {
   onEdit: (connection: Connection) => void;
   onDelete: (connection: Connection) => void;
   onNewConnection: () => void;
+  onDatabaseDropped?: (connectionId: string, database: string) => void;
 }
 
 const dbKey = (connId: string, db: string) => `${connId}:${db}`;
@@ -92,6 +96,7 @@ export function Sidebar({
   onEdit,
   onDelete,
   onNewConnection,
+  onDatabaseDropped,
 }: Props) {
   const [filter, setFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
@@ -113,6 +118,16 @@ export function Sidebar({
     database: string;
     table: string;
   }>({ open: false, connection: null, database: "", table: "" });
+  const [createDbState, setCreateDbState] = useState<{ open: boolean; connection: Connection | null }>({
+    open: false,
+    connection: null,
+  });
+  const [viewState, setViewState] = useState<{
+    open: boolean;
+    connection: Connection | null;
+    database: string;
+  }>({ open: false, connection: null, database: "" });
+  const [pendingDropDb, setPendingDropDb] = useState<{ connection: Connection; database: string } | null>(null);
 
   const markLoading = (key: string, on: boolean) =>
     setLoading((prev) => {
@@ -245,6 +260,19 @@ export function Sidebar({
     await loadTables(designer.connection, designer.database);
   };
 
+  const openCreateDatabase = (conn?: Connection) => {
+    if (connections.length === 0) {
+      toast.info("Create a connection first");
+      return;
+    }
+    setCreateDbState({ open: true, connection: conn ?? connections[0] });
+  };
+
+  const handleDatabaseCreated = (conn: Connection) => {
+    setExpandedConns((prev) => new Set(prev).add(conn.id));
+    refreshConnection(conn);
+  };
+
   return (
     <div
       className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
@@ -260,6 +288,15 @@ export function Sidebar({
             onClick={() => connections.forEach(refreshConnection)}
           >
             <RefreshCw />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="New database"
+            onClick={() => openCreateDatabase()}
+            disabled={connections.length === 0}
+          >
+            <FolderPlus />
           </Button>
           <Button size="icon-sm" variant="ghost" title="New connection" onClick={onNewConnection}>
             <Plus />
@@ -393,6 +430,9 @@ export function Sidebar({
                         <DropdownMenuItem onClick={() => onNewQuery(conn)}>
                           <Terminal /> New query
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openCreateDatabase(conn)}>
+                          <FolderPlus /> New database
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => onOpenGeneric("monitor", conn)}>
                           <Activity /> Monitor
                         </DropdownMenuItem>
@@ -433,6 +473,9 @@ export function Sidebar({
                 <ContextMenuContent>
                   <ContextMenuItem onClick={() => onNewQuery(conn)}>
                     <Terminal /> New query
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => openCreateDatabase(conn)}>
+                    <FolderPlus /> New database
                   </ContextMenuItem>
                   <ContextMenuItem onClick={() => onOpenGeneric("monitor", conn)}>
                     <Activity /> Monitor
@@ -550,6 +593,20 @@ export function Sidebar({
                               </ContextMenuItem>
                               <ContextMenuItem onClick={() => onImport(conn, db.name, null)}>
                                 <Upload /> Import / restore SQL
+                              </ContextMenuItem>
+                              <ContextMenuItem
+                                onClick={() =>
+                                  setViewState({ open: true, connection: conn, database: db.name })
+                                }
+                              >
+                                <Eye /> New view
+                              </ContextMenuItem>
+                              <ContextMenuSeparator />
+                              <ContextMenuItem
+                                className="text-destructive focus:text-destructive"
+                                onClick={() => setPendingDropDb({ connection: conn, database: db.name })}
+                              >
+                                <Trash2 /> Drop database
                               </ContextMenuItem>
                               <ContextMenuSeparator />
                               <ContextMenuItem onClick={() => copy(db.name, "Database name copied")}>
@@ -671,6 +728,59 @@ export function Sidebar({
         onOpenChange={(o) => setDesigner((s) => ({ ...s, open: o }))}
         onSubmit={handleCreateTable}
       />
+
+      <CreateDatabaseDialog
+        open={createDbState.open}
+        onOpenChange={(o) => setCreateDbState((s) => ({ ...s, open: o }))}
+        connections={connections}
+        initialConnectionId={createDbState.connection?.id}
+        onCreated={handleDatabaseCreated}
+      />
+
+      {viewState.connection && (
+        <ViewDialog
+          open={viewState.open}
+          onOpenChange={(o) => setViewState((s) => ({ ...s, open: o }))}
+          connectionId={viewState.connection.id}
+          database={viewState.database}
+          onSaved={() => {
+            if (viewState.connection) refreshDatabase(viewState.connection, viewState.database);
+          }}
+        />
+      )}
+
+      <AlertDialog open={!!pendingDropDb} onOpenChange={(o) => !o && setPendingDropDb(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Drop database?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes <span className="font-mono">{pendingDropDb?.database}</span> and all of its
+              tables, views and data. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                const target = pendingDropDb;
+                setPendingDropDb(null);
+                if (!target) return;
+                void api
+                  .dropDatabase(target.connection.id, target.database)
+                  .then(() => {
+                    toast.success(`Dropped database ${target.database}`);
+                    refreshConnection(target.connection);
+                    onDatabaseDropped?.(target.connection.id, target.database);
+                  })
+                  .catch((err) => toast.error(err instanceof Error ? err.message : String(err)));
+              }}
+            >
+              Drop database
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {copyState.connection && (
         <CopyTableDialog

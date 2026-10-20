@@ -47,6 +47,13 @@ shipped as a **single binary** with the UI embedded.
 - **Import / restore** — load CSV into a table (with header mapping, truncate,
   delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
   understands comments, quotes and `DELIMITER` for routines).
+- **Database objects** — create/drop databases, create and edit views, and
+  create/modify procedures, functions, triggers and events. A foreign-key
+  designer is available from the table structure view.
+- **Query control** — cancel a running query, choose an optional timeout, and
+  use Begin/Commit/Rollback across requests via persistent query sessions.
+- **Replication & slow queries** — inspect primary/replica status and the top
+  statement digests from `performance_schema`, alongside the existing monitor.
 - **Self-update** — `mysqlui update` downloads and verifies the latest release and
   atomically replaces the binary. Automatic updates check every 10 minutes by
   default and can be disabled or re-scheduled from the **… → Update** dialog.
@@ -373,7 +380,8 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `POST` | `/api/connections/test` | test a connection |
 | `POST` | `/api/connections/{id}/test` | test a saved connection |
 | `GET` | `/api/connections/{id}/info` | server version/host info |
-| `GET` | `/api/connections/{id}/databases` | list databases (add `?all=1` to include hidden system databases) |
+| `GET/POST` | `/api/connections/{id}/databases` | list / create databases |
+| `DELETE` | `/api/connections/{id}/databases/{db}` | drop database |
 | `GET` | `/api/connections/{id}/databases/{db}/tables` | list tables |
 | `POST` | `/api/connections/{id}/databases/{db}/tables` | create table |
 | `GET` | `…/tables/{table}/structure` | table structure |
@@ -383,9 +391,13 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `POST/PUT/DELETE` | `…/tables/{table}/columns[/{col}]` | add / modify / drop column |
 | `POST/DELETE` | `…/tables/{table}/indexes[/{idx}]` | add / drop index |
 | `POST` | `…/tables/{table}/copy` | copy table structure/data to another database |
+| `POST/DELETE` | `…/tables/{table}/foreign-keys[/{name}]` | add / drop foreign key |
 | `GET` | `…/tables/{table}/export?format=csv\|json\|sql` | export table |
 | `GET` | `…/databases/{db}/export?format=sql` | export database |
-| `POST` | `/api/connections/{id}/query` | run arbitrary SQL |
+| `POST` | `/api/connections/{id}/query` | run arbitrary SQL (supports `runId`, `sessionId`, `timeoutSec`) |
+| `POST` | `/api/connections/{id}/query/{runId}/cancel` | cancel a running query |
+| `POST` | `…/databases/{db}/views` | create or replace a view |
+| `POST` | `…/databases/{db}/objects` | create/replace procedure, function, trigger or event |
 | `POST` | `/api/connections/{id}/query/file` | execute an uploaded `.sql` script |
 | `GET/POST` | `/api/connections/{id}/schema-versions` | list / seal schema snapshots |
 | `GET/DELETE` | `/api/connections/{id}/schema-versions/{versionId}` | get / delete a snapshot |

@@ -1,4 +1,6 @@
 import type {
+  ReplicationStatus,
+  SlowQueryInfo,
   UpdateApplyResult,
   UpdateStatus,
   AuthStatus,
@@ -145,6 +147,49 @@ export const api = {
 
   // schema
   listDatabases: (id: string) => request<DatabaseInfo[]>(`${connBase(id)}/databases`),
+  createDatabase: (id: string, name: string, charset: string, collation: string) =>
+    request<{ ok: boolean; name: string; charset: string; collation: string }>(`${connBase(id)}/databases`, {
+      method: "POST",
+      body: JSON.stringify({ name, charset, collation }),
+    }),
+  dropDatabase: (id: string, name: string) =>
+    request<{ ok: boolean }>(`${connBase(id)}/databases/${enc(name)}`, { method: "DELETE" }),
+  saveView: (id: string, db: string, name: string, definition: string) =>
+    request<{ ok: boolean; name: string }>(`${dbBase(id, db)}/views`, {
+      method: "POST",
+      body: JSON.stringify({ name, definition }),
+    }),
+  saveObject: (
+    id: string,
+    db: string,
+    kind: "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT",
+    name: string,
+    definition: string
+  ) =>
+    request<{ ok: boolean; kind: string; name: string }>(`${dbBase(id, db)}/objects`, {
+      method: "POST",
+      body: JSON.stringify({ kind, name, definition }),
+    }),
+  addForeignKey: (
+    id: string,
+    db: string,
+    table: string,
+    body: {
+      name?: string;
+      column: string;
+      refDatabase: string;
+      refTable: string;
+      refColumn: string;
+      onDelete?: string;
+      onUpdate?: string;
+    }
+  ) =>
+    request<{ ok: boolean; name: string }>(`${tableBase(id, db, table)}/foreign-keys`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  dropForeignKey: (id: string, db: string, table: string, name: string) =>
+    request<{ ok: boolean }>(`${tableBase(id, db, table)}/foreign-keys/${enc(name)}`, { method: "DELETE" }),
   listTables: (id: string, db: string) => request<TableInfo[]>(`${dbBase(id, db)}/tables`),
   databaseSchema: (id: string, db: string) =>
     request<{ tables: { name: string; columns: string[] }[] }>(`${dbBase(id, db)}/schema`),
@@ -228,11 +273,18 @@ export const api = {
     request<{ ok: boolean }>(`${tableBase(id, db, table)}/indexes/${enc(index)}`, { method: "DELETE" }),
 
   // query & DDL
-  runQuery: (id: string, database: string, sql: string) =>
+  runQuery: (
+    id: string,
+    database: string,
+    sql: string,
+    opts?: { runId?: string; sessionId?: string; timeoutSec?: number }
+  ) =>
     request<QueryResult>(`${connBase(id)}/query`, {
       method: "POST",
-      body: JSON.stringify({ database, sql }),
+      body: JSON.stringify({ database, sql, ...opts }),
     }),
+  cancelQuery: (id: string, runId: string) =>
+    request<{ ok: boolean }>(`${connBase(id)}/query/${enc(runId)}/cancel`, { method: "POST" }),
   runSQLFile: (id: string, database: string | null, file: File) => {
     const form = new FormData();
     form.append("file", file);
@@ -261,6 +313,8 @@ export const api = {
   monitorOverview: (id: string) => request<MonitorOverview>(`${connBase(id)}/monitor/overview`),
   monitorStatus: (id: string) => request<NameValue[]>(`${connBase(id)}/monitor/status`),
   monitorVariables: (id: string) => request<NameValue[]>(`${connBase(id)}/monitor/variables`),
+  replicationStatus: (id: string) => request<ReplicationStatus>(`${connBase(id)}/monitor/replication`),
+  slowQueries: (id: string) => request<SlowQueryInfo>(`${connBase(id)}/monitor/slow-queries`),
   killProcess: (id: string, pid: number, queryOnly: boolean) =>
     request<{ ok: boolean }>(`${connBase(id)}/monitor/process/${pid}?query=${queryOnly}`, { method: "DELETE" }),
 
