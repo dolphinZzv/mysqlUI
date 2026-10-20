@@ -33,7 +33,7 @@ import {
   X,
 } from "lucide-react";
 import { api, databaseExportUrl, serverExportUrl, triggerDownload } from "@/lib/api";
-import type { Connection, CreateTableRequest, DatabaseInfo, TableInfo } from "@/lib/types";
+import type { Connection, CreateTableRequest, DatabaseInfo, ServerInfo, TableInfo } from "@/lib/types";
 import type { GenericTabKind } from "@/lib/tabs";
 import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { useRecentTables } from "@/lib/recentObjects";
@@ -69,6 +69,7 @@ import { TableDesignerDialog } from "@/components/TableDesignerDialog";
 import { CopyTableDialog } from "@/components/CopyTableDialog";
 import { CreateDatabaseDialog } from "@/components/CreateDatabaseDialog";
 import { ViewDialog } from "@/components/ViewDialog";
+import { DbFlavorIcon } from "@/components/DbFlavorIcon";
 
 interface Props {
   connections: Connection[];
@@ -106,6 +107,7 @@ export function Sidebar({
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [dbs, setDbs] = useState<Record<string, DatabaseInfo[]>>({});
   const [tables, setTables] = useState<Record<string, TableInfo[]>>({});
+  const [serverInfo, setServerInfo] = useState<Record<string, ServerInfo>>({});
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [pendingDelete, setPendingDelete] = useState<Connection | null>(null);
@@ -205,6 +207,20 @@ export function Sidebar({
       for (const id of Object.keys(prev)) if (ids.has(id)) next[id] = prev[id];
       return next;
     });
+  }, [connections]);
+
+  useEffect(() => {
+    let cancelled = false;
+    for (const conn of connections) {
+      api.serverInfo(conn.id)
+        .then((info) => {
+          if (!cancelled) setServerInfo((prev) => ({ ...prev, [conn.id]: info }));
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [connections]);
 
   const refreshConnection = (conn: Connection) => {
@@ -429,6 +445,12 @@ export function Sidebar({
                     />
                     {connError ? (
                       <Unplug className="h-4 w-4 shrink-0 text-destructive" />
+                    ) : serverInfo[conn.id] ? (
+                      <DbFlavorIcon
+                        flavor={serverInfo[conn.id].flavor}
+                        version={serverInfo[conn.id].version}
+                        size={16}
+                      />
                     ) : (
                       <Server
                         className={cn(

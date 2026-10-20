@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Check, Copy, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CellValue } from "@/components/CellValue";
+import { Input } from "@/components/ui/input";
 
 interface Props {
   columns: string[];
@@ -10,7 +11,31 @@ interface Props {
 
 export function ResultGrid({ columns, rows }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [sortCol, setSortCol] = useState<number | null>(null);
+  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const timer = useRef<number | undefined>(undefined);
+
+  const displayed = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let out = rows.map((row, index) => ({ row, index }));
+    if (q) {
+      out = out.filter(({ row }) => row.some((cell) => String(cell ?? "").toLowerCase().includes(q)));
+    }
+    if (sortCol !== null) {
+      out = [...out].sort((a, b) => {
+        const av = a.row[sortCol];
+        const bv = b.row[sortCol];
+        if (av === bv) return 0;
+        if (av === null || av === undefined) return 1;
+        if (bv === null || bv === undefined) return -1;
+        const an = typeof av === "number" ? av : String(av);
+        const bn = typeof bv === "number" ? bv : String(bv);
+        return (an < bn ? -1 : 1) * sortDir;
+      });
+    }
+    return out;
+  }, [rows, query, sortCol, sortDir]);
 
   const copyCell = (value: unknown, key: string) => {
     const text = value === null || value === undefined ? "NULL" : String(value);
@@ -22,7 +47,12 @@ export function ResultGrid({ columns, rows }: Props) {
   };
 
   return (
-    <div className="scrollbar-thin relative h-full overflow-auto">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="relative border-b px-3 py-1.5">
+        <Search className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input className="h-7 w-[240px] pl-7 text-xs" placeholder="Filter results" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </div>
+    <div className="scrollbar-thin relative min-h-0 flex-1 overflow-auto">
       <table className="w-max min-w-full border-separate border-spacing-0 text-[13px]">
         <thead className="sticky top-0 z-20">
           <tr>
@@ -32,15 +62,23 @@ export function ResultGrid({ columns, rows }: Props) {
             {columns.map((col) => (
               <th
                 key={col}
-                className="border-b border-r bg-card px-3 py-1.5 text-left font-medium"
+                onClick={() => {
+                  const idx = columns.indexOf(col);
+                  if (sortCol === idx) setSortDir((d) => (d === 1 ? -1 : 1));
+                  else {
+                    setSortCol(idx);
+                    setSortDir(1);
+                  }
+                }}
+                className="cursor-pointer border-b border-r bg-card px-3 py-1.5 text-left font-medium hover:bg-muted/40"
               >
-                <span className="block max-w-[360px] truncate">{col}</span>
+                <span className="block max-w-[360px] truncate">{col}{sortCol === columns.indexOf(col) ? (sortDir === 1 ? " ↑" : " ↓") : ""}</span>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, r) => (
+          {displayed.map(({ row, index: r }) => (
             <tr key={r} className="group hover:bg-muted/40">
               <td className="sticky left-0 z-10 border-b border-r bg-card px-2 py-1 text-right text-[11px] text-muted-foreground group-hover:bg-muted">
                 {r + 1}
@@ -79,7 +117,7 @@ export function ResultGrid({ columns, rows }: Props) {
               })}
             </tr>
           ))}
-          {rows.length === 0 && (
+          {displayed.length === 0 && (
             <tr>
               <td
                 colSpan={columns.length + 1}
@@ -91,6 +129,7 @@ export function ResultGrid({ columns, rows }: Props) {
           )}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }

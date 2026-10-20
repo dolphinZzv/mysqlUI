@@ -302,7 +302,7 @@ sc.exe start mysqlui
 
 ## Build from source
 
-Requirements: Go 1.26+, Node 20+.
+Requirements: Go 1.26+, Node 20+, pnpm 10+.
 
 ```bash
 # build a single binary with the UI embedded
@@ -331,7 +331,7 @@ proxies `/api` to the backend):
 cd backend && go run .
 
 # terminal 2
-cd frontend && npm install && npm run dev
+cd frontend && pnpm install && pnpm run dev
 # open http://localhost:5173
 ```
 

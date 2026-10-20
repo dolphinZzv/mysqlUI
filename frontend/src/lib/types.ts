@@ -175,6 +175,7 @@ export interface CreateTableRequest {
 
 export interface ServerInfo {
   version: string;
+  flavor?: string;
   comment: string;
   hostname: string;
   port: number;

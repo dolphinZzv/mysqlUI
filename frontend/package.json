@@ -1,6 +1,7 @@
 {
   "name": "mysqlui-frontend",
   "private": true,
+  "packageManager": "pnpm@10.0.0",
   "version": "0.1.0",
   "type": "module",
   "scripts": {

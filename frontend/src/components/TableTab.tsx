@@ -10,6 +10,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Table2,
   Trash2,
   X,
@@ -20,6 +21,7 @@ import type { TableTabDef } from "@/lib/tabs";
 import { formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -64,6 +66,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [pageSize, setPageSize] = useState(100);
   const [orderBy, setOrderBy] = useState("");
   const [filters, setFilters] = useState<FilterCondition[]>([]);
+  const [search, setSearch] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -99,7 +103,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           size,
           p * size,
           orderBy,
-          filters
+          filters,
+          search
         );
         setData({ ...res, primaryKey: res.primaryKey ?? [] });
         setSelected(new Set());
@@ -109,7 +114,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         setLoading(false);
       }
     },
-    [tab.connectionId, tab.database, tab.table, orderBy, filters]
+    [tab.connectionId, tab.database, tab.table, orderBy, filters, search]
   );
 
   useEffect(() => {
@@ -118,6 +123,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     setStructure(null);
     setOrderBy("");
     setFilters([]);
+    setSearch("");
+    setSearchDraft("");
     void loadStructure();
   }, [tab.id, loadStructure]);
 
@@ -307,6 +314,21 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           <Button size="sm" variant="outline" onClick={() => void loadData(page, pageSize)} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
           </Button>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="h-7 w-[180px] pl-7 text-xs"
+              placeholder="Search all columns"
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setSearch(searchDraft.trim());
+                  setPage(0);
+                }
+              }}
+            />
+          </div>
           <FilterBar columns={filterColumns} filters={filters} onApply={applyFilters} />
           <ExportMenu
             connectionId={tab.connectionId}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Activity, Gauge, GitBranch, Loader2, Pencil, RefreshCw, Search, Skull, Timer, X } from "lucide-react";
+import { Activity, Copy, Gauge, GitBranch, Loader2, Pencil, RefreshCw, Search, Skull, Timer, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { MonitorOverview, NameValue, ProcessInfo, ReplicationStatus, SlowQueryInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -55,6 +55,8 @@ export function MonitorTab({ connectionId }: Props) {
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState("");
+  const [processFilter, setProcessFilter] = useState("");
+  const [slowFilter, setSlowFilter] = useState("");
   const [killTarget, setKillTarget] = useState<ProcessInfo | null>(null);
 
   const refresh = useCallback(async () => {
@@ -211,6 +213,10 @@ export function MonitorTab({ connectionId }: Props) {
           </TabsList>
 
           <TabsContent value="processes" className="mt-3">
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input className="h-8 pl-8 text-xs" placeholder="Filter by user, database, command or SQL" value={processFilter} onChange={(e) => setProcessFilter(e.target.value)} />
+            </div>
             <div className="overflow-hidden rounded-lg border">
               <table className="w-full text-[12px]">
                 <thead className="bg-muted/50 text-left text-muted-foreground">
@@ -226,7 +232,7 @@ export function MonitorTab({ connectionId }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {processes.map((p) => (
+                  {processes.filter((p) => { const q = processFilter.toLowerCase(); return !q || [p.user,p.db,p.command,p.state,p.info].some((v) => String(v ?? "").toLowerCase().includes(q)); }).map((p) => (
                     <tr key={p.id} className="border-t hover:bg-muted/30">
                       <td className="px-2 py-1.5 font-mono text-muted-foreground">{p.id}</td>
                       <td className="px-2 py-1.5">{p.user}</td>
@@ -272,7 +278,7 @@ export function MonitorTab({ connectionId }: Props) {
             <ReplicationView data={replication} />
           </TabsContent>
           <TabsContent value="slow" className="mt-3">
-            <SlowQueriesView data={slow} />
+            <SlowQueriesView data={slow} filter={slowFilter} onFilter={setSlowFilter} />
           </TabsContent>
         </Tabs>
 
@@ -414,7 +420,7 @@ function slowNumber(v: unknown): string {
   return String(v);
 }
 
-function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
+function SlowQueriesView({ data, filter, onFilter }: { data: SlowQueryInfo | null; filter: string; onFilter: (v: string) => void }) {
   const { t } = useI18n();
   if (!data) {
     return <div className="p-6 text-center text-sm text-muted-foreground">{t("common.loading", "Loading…")}</div>;
@@ -429,6 +435,10 @@ function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
         {data.logFile && <span className="font-mono text-muted-foreground">{data.logFile}</span>}
       </div>
       {data.error && <p className="mb-3 break-all text-xs text-destructive">{data.error}</p>}
+      <div className="relative mb-2">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input className="h-8 pl-8 text-xs" placeholder="Filter slow queries" value={filter} onChange={(e) => onFilter(e.target.value)} />
+      </div>
       <div className="overflow-hidden rounded-lg border">
         <table className="w-full text-[12px]">
           <thead className="bg-muted/50 text-left text-muted-foreground">
@@ -443,7 +453,7 @@ function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
             </tr>
           </thead>
           <tbody>
-            {data.rows.map((row, i) => (
+            {data.rows.filter((row) => !filter || String(row.DIGEST_TEXT ?? "").toLowerCase().includes(filter.toLowerCase())).map((row, i) => (
               <tr key={i} className="border-t hover:bg-muted/30">
                 <td className="max-w-[520px] px-2 py-1.5 font-mono text-[11px]">
                   <span className="block truncate" title={String(row.DIGEST_TEXT ?? "")}>
@@ -460,6 +470,11 @@ function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
                 <td className="px-2 py-1.5 tabular-nums">{slowNumber(row.SUM_ROWS_EXAMINED)}</td>
                 <td className="px-2 py-1.5 tabular-nums">{slowNumber(row.SUM_ROWS_SENT)}</td>
                 <td className="px-2 py-1.5 text-muted-foreground">{String(row.LAST_SEEN ?? "-")}</td>
+                <td className="px-2 py-1.5 text-right">
+                  <Button size="icon-sm" variant="ghost" title="Copy SQL" onClick={() => void navigator.clipboard.writeText(String(row.DIGEST_TEXT ?? "")).then(() => toast.success("Copied"))}>
+                    <Copy />
+                  </Button>
+                </td>
               </tr>
             ))}
             {data.rows.length === 0 && !data.error && (

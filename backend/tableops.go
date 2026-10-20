@@ -837,6 +837,7 @@ func (s *Server) dropIndex(w http.ResponseWriter, r *http.Request) {
 
 type serverInfoResponse struct {
 	Version       string `json:"version"`
+	Flavor        string `json:"flavor"`
 	Comment       string `json:"comment"`
 	Hostname      string `json:"hostname"`
 	Port          int    `json:"port"`
@@ -856,9 +857,28 @@ func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
 	resp := serverInfoResponse{}
 	_ = db.QueryRowContext(r.Context(), "SELECT VERSION()").Scan(&resp.Version)
 	_ = db.QueryRowContext(r.Context(), "SELECT @@version_comment").Scan(&resp.Comment)
+	resp.Flavor = detectDBFlavor(resp.Version + " " + resp.Comment)
 	_ = db.QueryRowContext(r.Context(), "SELECT @@hostname").Scan(&resp.Hostname)
 	_ = db.QueryRowContext(r.Context(), "SELECT @@port").Scan(&resp.Port)
 	_ = db.QueryRowContext(r.Context(), "SELECT COALESCE(DATABASE(), '')").Scan(&resp.CurrentDB)
 	_ = db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM information_schema.SCHEMATA").Scan(&resp.DatabaseCount)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func detectDBFlavor(text string) string {
+	t := strings.ToLower(text)
+	switch {
+	case strings.Contains(t, "mariadb"):
+		return "mariadb"
+	case strings.Contains(t, "tidb"):
+		return "tidb"
+	case strings.Contains(t, "oceanbase"):
+		return "oceanbase"
+	case strings.Contains(t, "percona"):
+		return "percona"
+	case strings.Contains(t, "mysql"):
+		return "mysql"
+	default:
+		return "mysql"
+	}
 }

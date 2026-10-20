@@ -110,10 +110,11 @@ const connBase = (id: string) => `/connections/${enc(id)}`;
 const dbBase = (id: string, db: string) => `${connBase(id)}/databases/${enc(db)}`;
 const tableBase = (id: string, db: string, table: string) => `${dbBase(id, db)}/tables/${enc(table)}`;
 
-function dataQuery(limit: number, offset: number, orderBy?: string, filters?: FilterCondition[]): string {
+function dataQuery(limit: number, offset: number, orderBy?: string, filters?: FilterCondition[], q?: string): string {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (orderBy) params.set("orderBy", orderBy);
   if (filters && filters.length) params.set("filters", JSON.stringify(filters));
+  if (q) params.set("q", q);
   return params.toString();
 }
 
@@ -204,8 +205,13 @@ export const api = {
     limit: number,
     offset: number,
     orderBy?: string,
-    filters?: FilterCondition[]
-  ) => request<TableData>(`${tableBase(id, db, table)}/data?${dataQuery(limit, offset, orderBy, filters)}`),
+    filters?: FilterCondition[],
+    q?: string
+  ) => request<TableData>(`${tableBase(id, db, table)}/data?${dataQuery(limit, offset, orderBy, filters, q)}`),
+  tableStats: (id: string, db: string, table: string) =>
+    request<{ rows: number; dataLength: number; indexLength: number; autoIncrement: number; engine: string; collation: string; comment: string; createTime: string; updateTime: string }>(
+      `${tableBase(id, db, table)}/stats`
+    ),
   cellValue: (id: string, db: string, table: string, column: string, primaryKey: Record<string, unknown>) =>
     request<CellValue>(`${tableBase(id, db, table)}/cell`, {
       method: "POST",

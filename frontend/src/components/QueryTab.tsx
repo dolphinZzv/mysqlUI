@@ -12,6 +12,7 @@ import {
   Eraser,
   FileJson,
   FileSpreadsheet,
+  FileText,
   Hammer,
   History,
   Loader2,
@@ -96,6 +97,15 @@ function toINSERT(table: string, columns: string[], rows: unknown[][]): string {
     .join("\n");
 }
 
+function toXLS(columns: string[], rows: unknown[][]): string {
+  const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${columns
+    .map((c) => `<th>${esc(c)}</th>`)
+    .join("")}</tr></thead><tbody>${rows
+    .map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`)
+    .join("")}</tbody></table></body></html>`;
+}
+
 function download(name: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -119,6 +129,7 @@ export function QueryTab({ tab, connections }: Props) {
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
   const [favorites, setFavorites] = useState<string[]>(() => loadJSON<string[]>(FAVORITES_KEY, []));
+  const [historyFilter, setHistoryFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
   const pinnedQuery = findPinnedQuery(pinnedQueries, connectionId, database, sql.trim());
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -195,6 +206,9 @@ export function QueryTab({ tab, connections }: Props) {
     if (!text) return;
     if (!connectionId) {
       toast.error(t("query.connection", "Connection") + " ?");
+      return;
+    }
+    if (/^\s*(DROP|TRUNCATE)\b/i.test(text) && !window.confirm("This looks destructive. Run it anyway?")) {
       return;
     }
     const runId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
@@ -326,9 +340,11 @@ export function QueryTab({ tab, connections }: Props) {
     void navigator.clipboard.writeText(text).then(() => toast.success(t("structure.copied", "Copied")));
   };
 
-  const exportResult = (kind: "csv" | "json") => {
+  const exportResult = (kind: "csv" | "json" | "sql" | "xls") => {
     if (!currentResult) return;
     if (kind === "csv") download("result.csv", toCSV(currentResult.columns, currentResult.rows), "text/csv");
+    else if (kind === "sql") download("result.sql", toINSERT(database, currentResult.columns, currentResult.rows), "application/sql");
+    else if (kind === "xls") download("result.xls", toXLS(currentResult.columns, currentResult.rows), "application/vnd.ms-excel");
     else
       download(
         "result.json",
@@ -495,9 +511,17 @@ export function QueryTab({ tab, connections }: Props) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="max-w-md">
+              <div className="p-1">
+                <input
+                  className="h-7 w-full rounded border bg-background px-2 text-xs outline-none"
+                  placeholder={t("query.searchHistory", "Search history")}
+                  value={historyFilter}
+                  onChange={(e) => setHistoryFilter(e.target.value)}
+                />
+              </div>
               <DropdownMenuLabel>{t("query.recentQueries", "Recent queries")}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {history.map((h, i) => (
+              {history.filter((h) => !historyFilter || h.toLowerCase().includes(historyFilter.toLowerCase())).map((h, i) => (
                 <DropdownMenuItem key={i} onClick={() => setSql(h)} className="font-mono text-xs">
                   <span className="max-w-[360px] truncate">{h.replace(/\s+/g, " ")}</span>
                 </DropdownMenuItem>

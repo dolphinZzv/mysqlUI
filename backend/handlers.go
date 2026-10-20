@@ -74,6 +74,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables", s.createTable)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/structure", s.tableStructure)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/data", s.tableData)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/stats", s.tableStats)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables/{table}/export", s.exportTable)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}", s.dropTable)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rename", s.renameTable)
@@ -785,6 +786,30 @@ type tableDataResponse struct {
 	PrimaryKey []string `json:"primaryKey"`
 }
 
+func (s *Server) tableStats(w http.ResponseWriter, r *http.Request) {
+	_, db, dbName, table, ok := s.params(w, r)
+	if !ok || table == "" {
+		return
+	}
+	var rows, dataLen, indexLen, autoInc sql.NullInt64
+	var engine, collation, comment, createTime, updateTime sql.NullString
+	err := db.QueryRowContext(r.Context(), `
+		SELECT COALESCE(TABLE_ROWS,0), COALESCE(DATA_LENGTH,0), COALESCE(INDEX_LENGTH,0),
+		       COALESCE(AUTO_INCREMENT,0), COALESCE(ENGINE,''), COALESCE(TABLE_COLLATION,''),
+		       COALESCE(TABLE_COMMENT,''), COALESCE(CREATE_TIME,''), COALESCE(UPDATE_TIME,'')
+		FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).
+		Scan(&rows, &dataLen, &indexLen, &autoInc, &engine, &collation, &comment, &createTime, &updateTime)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows": rows.Int64, "dataLength": dataLen.Int64, "indexLength": indexLen.Int64,
+		"autoIncrement": autoInc.Int64, "engine": engine.String, "collation": collation.String,
+		"comment": comment.String, "createTime": createTime.String, "updateTime": updateTime.String,
+	})
+}
+
 func (s *Server) tableData(w http.ResponseWriter, r *http.Request) {
 	_, db, dbName, table, ok := s.params(w, r)
 	if !ok {
@@ -819,6 +844,24 @@ func (s *Server) tableData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		cols, err := tableColumns(ctx, db, dbName, table)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		parts := make([]string, 0, len(cols))
+		for _, c := range cols {
+			parts = append(parts, "CAST("+quoteIdent(c)+" AS CHAR) LIKE ?")
+			filterVals = append(filterVals, "%"+q+"%")
+		}
+		searchWhere := "(" + strings.Join(parts, " OR ") + ")"
+		if where == "" {
+			where = " WHERE " + searchWhere
+		} else {
+			where += " AND " + searchWhere
+		}
 	}
 
 	var total int64
