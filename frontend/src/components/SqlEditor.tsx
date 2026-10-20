@@ -13,6 +13,8 @@ interface Props {
   placeholder?: string;
   className?: string;
   minHeight?: number;
+  initialSelection?: { start: number; end: number };
+  onSelection?: (selection: { start: number; end: number }) => void;
 }
 
 const KEYWORDS = [
@@ -83,7 +85,7 @@ interface Suggestion {
   detail?: string;
 }
 
-export function SqlEditor({ value, onChange, onRun, schema, placeholder, className, minHeight = 180 }: Props) {
+export function SqlEditor({ value, onChange, onRun, schema, placeholder, className, minHeight = 180, initialSelection, onSelection }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -94,6 +96,18 @@ export function SqlEditor({ value, onChange, onRun, schema, placeholder, classNa
   const [activeWord, setActiveWord] = useState<{ start: number; end: number } | null>(null);
 
   const lineCount = Math.max(1, value.split("\n").length);
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta || !initialSelection) return;
+    const id = window.setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(initialSelection.start, initialSelection.end);
+    }, 0);
+    return () => window.clearTimeout(id);
+    // Only apply the initial selection when the editor mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const tableColumns = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -320,6 +334,10 @@ export function SqlEditor({ value, onChange, onRun, schema, placeholder, classNa
             requestAnimationFrame(() => openSuggestions(false));
           }}
           onKeyDown={onKeyDown}
+          onSelect={(e) => {
+            const ta = e.currentTarget;
+            onSelection?.({ start: ta.selectionStart, end: ta.selectionEnd });
+          }}
           onScroll={syncScroll}
           onClick={() => setSuggestions([])}
           className="scrollbar-thin absolute inset-0 resize-none overflow-auto whitespace-pre-wrap break-words bg-transparent px-3 py-2 text-transparent caret-foreground outline-none placeholder:text-muted-foreground/40"

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { CopyPlus, KeyRound, Loader2, Lock, Plus, RefreshCw, ShieldCheck, Trash2, Unlock, UserPlus, Users } from "lucide-react";
+import { CopyPlus, Grid3X3, KeyRound, Loader2, Lock, Plus, RefreshCw, ShieldCheck, Trash2, Unlock, UserPlus, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import type { UserInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { PrivilegeMatrixDialog } from "@/components/PrivilegeMatrixDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,6 +51,11 @@ export function UsersTab({ connectionId }: Props) {
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyTarget, setCopyTarget] = useState({ user: "", host: "%" });
   const [lockBusy, setLockBusy] = useState<string | null>(null);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [copyUserOpen, setCopyUserOpen] = useState(false);
+  const [copyUserForm, setCopyUserForm] = useState({ user: "", host: "%", password: "", copyPassword: false });
+  const [matrixOpen, setMatrixOpen] = useState(false);
 
   const [newUser, setNewUser] = useState({ user: "", host: "%", password: "" });
   const [grantForm, setGrantForm] = useState({
@@ -152,6 +158,44 @@ export function UsersTab({ connectionId }: Props) {
     }
   };
 
+  const submitPassword = async () => {
+    if (!selected) return;
+    if (!newPassword) {
+      toast.error("Password is required");
+      return;
+    }
+    try {
+      await api.alterUser(connectionId, selected.host, selected.user, newPassword);
+      toast.success("Password changed");
+      setPasswordOpen(false);
+      setNewPassword("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const submitCopyUser = async () => {
+    if (!selected) return;
+    if (!copyUserForm.user.trim()) {
+      toast.error("Target user is required");
+      return;
+    }
+    try {
+      const res = await api.copyUser(connectionId, selected.host, selected.user, {
+        targetUser: copyUserForm.user,
+        targetHost: copyUserForm.host || "%",
+        password: copyUserForm.password,
+        copyPassword: copyUserForm.copyPassword,
+      });
+      toast.success(`User copied with ${res.grants} grant(s)`);
+      setCopyUserOpen(false);
+      setCopyUserForm({ user: "", host: "%", password: "", copyPassword: false });
+      void load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const confirmDrop = async () => {
     if (!dropTarget) return;
     try {
@@ -178,6 +222,9 @@ export function UsersTab({ connectionId }: Props) {
           <div className="ml-auto flex items-center gap-1.5">
             <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
               {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setMatrixOpen(true)}>
+              <Grid3X3 /> Matrix
             </Button>
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               <UserPlus /> {t("users.create", "New user")}
@@ -249,6 +296,12 @@ export function UsersTab({ connectionId }: Props) {
             </Badge>
           )}
           <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={!selected} onClick={() => setPasswordOpen(true)}>
+              <KeyRound /> Change password
+            </Button>
+            <Button size="sm" variant="outline" disabled={!selected} onClick={() => setCopyUserOpen(true)}>
+              <CopyPlus /> Copy user
+            </Button>
             <Button size="sm" variant="outline" disabled={!selected} onClick={() => setCopyOpen(true)}>
               <CopyPlus /> Copy grants
             </Button>
@@ -425,6 +478,71 @@ export function UsersTab({ connectionId }: Props) {
         </DialogContent>
       </Dialog>
 
+
+      <Dialog open={passwordOpen} onOpenChange={setPasswordOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-primary" /> Change password
+            </DialogTitle>
+            <DialogDescription className="font-mono">
+              {selected?.user}@{selected?.host}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label className="text-xs">New password</Label>
+            <Input type="password" className="h-8 font-mono" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPasswordOpen(false)}>Cancel</Button>
+            <Button onClick={() => void submitPassword()}><KeyRound /> Change password</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={copyUserOpen} onOpenChange={setCopyUserOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CopyPlus className="h-4 w-4 text-primary" /> Copy user
+            </DialogTitle>
+            <DialogDescription>
+              Copy {selected?.user}@{selected?.host} to a new account, including its grants.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="grid gap-1.5">
+                <Label className="text-xs">Target user</Label>
+                <Input className="h-8 font-mono" value={copyUserForm.user} onChange={(e) => setCopyUserForm((s) => ({ ...s, user: e.target.value }))} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">Target host</Label>
+                <Input className="h-8 font-mono" value={copyUserForm.host} onChange={(e) => setCopyUserForm((s) => ({ ...s, host: e.target.value }))} />
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">New password (recommended)</Label>
+              <Input type="password" className="h-8 font-mono" value={copyUserForm.password} onChange={(e) => setCopyUserForm((s) => ({ ...s, password: e.target.value }))} />
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={copyUserForm.copyPassword}
+                onChange={(e) => setCopyUserForm((s) => ({ ...s, copyPassword: e.target.checked }))}
+              />
+              Copy the source password hash when no new password is given (MySQL/MariaDB)
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCopyUserOpen(false)}>Cancel</Button>
+            <Button onClick={() => void submitCopyUser()}><CopyPlus /> Copy user</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <PrivilegeMatrixDialog open={matrixOpen} onOpenChange={setMatrixOpen} connectionId={connectionId} />
       <AlertDialog open={dropTarget !== null} onOpenChange={(o) => !o && setDropTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

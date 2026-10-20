@@ -25,7 +25,12 @@ shipped as a **single binary** with the UI embedded.
 - **Data browser** — paginated grid with inline cell editing, insert row dialog,
   delete rows, column sorting and multi-condition filtering. Drag across rows to
   select a range (Shift extends, Cmd/Ctrl adds) and delete them in one
-  transaction.
+  transaction. Columns can be resized, hidden, frozen and are remembered per
+  connection + database + table. Shift-click / drag selects a rectangular cell
+  range: copy it as TSV, paste TSV/CSV with a preview, and navigate with
+  arrows/Tab/Enter (Esc clears). Cell edits collect in a pending list, can be
+  previewed as UPDATE statements, then committed in one transaction or rolled
+  back as a batch.
 - **Charts** — turn any query result into a bar / line / area / pie chart with a
   dependency-free SVG renderer, choosing the X axis, value fields and
   count / sum / avg / min / max aggregation.
@@ -49,12 +54,19 @@ shipped as a **single binary** with the UI embedded.
   understands comments, quotes and `DELIMITER` for routines).
 - **Data tools** — paste rows from Excel/Sheets, duplicate rows, copy rows as
   INSERT/UPDATE, compare table data across databases, and import JSON/Excel.
+- **Cross-connection diff** — compare schema and table data between two saved
+  connections, preview the sync SQL and execute explicitly against the target.
 - **Table maintenance** — truncate, optimize, analyze, check, repair and edit
   table options (engine, charset, collation, comment).
 - **SQL snippets** — save reusable SQL fragments in a right-hand panel and
   insert them at the editor cursor.
+- **Query parameters** — `:name` and `{{name}}` placeholders prompt for values,
+  quote them safely (including NULL), preview the final SQL and can be saved as
+  named parameter sets.
 - **Scheduled backups** — periodic `.sql` dumps to a configurable directory with
-  retention cleanup.
+  retention cleanup. A backup file manager lists size/time/database, downloads,
+  deletes and restores dumps into a chosen connection/database (with
+  confirmation); restore can rewrite the dump into a different database.
 - **Database objects** — create/drop databases, create and edit views, and
   create/modify procedures, functions, triggers and events. A foreign-key
   designer is available from the table structure view.
@@ -68,13 +80,19 @@ shipped as a **single binary** with the UI embedded.
   default and can be disabled or re-scheduled from the **… → Update** dialog.
 - **Server monitor** — overview metrics, live process list with kill / kill query,
   and searchable status/variable tables.
-- **Users & privileges** — list users, `SHOW GRANTS`, create/alter/drop users and
-  grant/revoke privileges with a validated privilege allow-list.
+- **Users & privileges** — list users, `SHOW GRANTS`, create/alter/drop users,
+  change passwords, copy users (password hash + grants), and grant/revoke
+  privileges with a validated privilege allow-list. The privilege matrix shows
+  users × databases with global/inherited highlighting, table-level detail and
+  inline grant/revoke.
 - **Routines & triggers** — browse procedures, functions, triggers and events,
   view their `SHOW CREATE` definition and drop them.
 - **SQL editor** — syntax highlighting and schema-aware autocomplete
   (`Ctrl/⌘+Enter` to run, `Ctrl+Space` to complete), query history and favorites.
 - **Query builder** — point-and-click column/condition/order builder.
+- **Connection tools** — clone a profile, batch-test every saved connection, and
+  export/import connection profiles (passwords optional; imports validate and
+  rename name conflicts instead of overwriting).
 - **Global search** — find tables and columns across all databases (`Ctrl+K`).
 - **ER diagram** — visualize tables and foreign-key relationships.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
@@ -85,9 +103,13 @@ shipped as a **single binary** with the UI embedded.
   applied. Snapshots persist to `<data>/schema-versions.json`.
 - **Smart cells** — view/edit large text/JSON, preview images/BLOBs, set NULL,
   and jump along foreign keys.
-- **UI** — multi-tab workspace with session restore, dark/light themes,
-  English/Chinese interface, a resizable sidebar and JSON syntax highlighting in
-  the cell viewer.
+- **Capacity statistics** — per-table rows/data/index size/engine/collation/time
+  and database totals, degrading gracefully when privileges are missing.
+- **Favorites** — star tables and databases; a Favorites section in the sidebar
+  persists across reloads.
+- **UI** — multi-tab workspace with session restore, tab rename/duplicate/close
+  others/close-right, dark/light themes, English/Chinese interface, a resizable
+  sidebar and JSON syntax highlighting in the cell viewer.
 
 ## Install (one-click)
 
@@ -109,7 +131,7 @@ irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 Options (environment variables):
 
 ```bash
-VERSION=v0.1.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
+VERSION=v1.0.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 ```
 
 Then run:
@@ -264,7 +286,7 @@ The release checksum is verified before the binary is replaced:
 ```bash
 mysqlui update                 # install the latest release
 mysqlui update --check         # only check, do not install
-mysqlui update --version v0.6.0
+mysqlui update --version v1.0.0
 mysqlui update --force         # reinstall even when already current
 ```
 
@@ -373,8 +395,8 @@ GitHub Release with the binaries and `checksums.txt`.
 To cut a release, push a version tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 You can also trigger it manually from **Actions → Release → Run workflow**.
@@ -388,15 +410,21 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `PUT/DELETE` | `/api/connections/{id}` | update / delete |
 | `POST` | `/api/connections/test` | test a connection |
 | `POST` | `/api/connections/{id}/test` | test a saved connection |
+| `POST` | `/api/connections/test-all` | test every saved connection |
+| `POST` | `/api/connections/{id}/clone` | clone a connection profile |
+| `GET/POST` | `/api/connections/export`, `/api/connections/import` | move profiles (passwords optional) |
 | `GET` | `/api/connections/{id}/info` | server version/host info |
 | `GET/POST` | `/api/connections/{id}/databases` | list / create databases |
 | `DELETE` | `/api/connections/{id}/databases/{db}` | drop database |
 | `GET` | `/api/connections/{id}/databases/{db}/tables` | list tables |
 | `POST` | `/api/connections/{id}/databases/{db}/tables` | create table |
 | `GET` | `…/tables/{table}/structure` | table structure |
+| `GET` | `…/databases/{db}/stats` | database capacity totals |
+| `GET` | `…/tables/{table}/stats` | table rows/data/index/engine/collation stats |
 | `GET` | `…/tables/{table}/data` | paginated rows (`limit`, `offset`, `orderBy`, `filters`) |
 | `POST/PUT/DELETE` | `…/tables/{table}/rows` | insert / update / delete rows |
 | `POST` | `…/tables/{table}/rows/bulk-delete` | delete several rows by primary key in one transaction |
+| `POST` | `…/tables/{table}/rows/bulk-update` | apply a batch of cell edits in one transaction |
 | `POST/PUT/DELETE` | `…/tables/{table}/columns[/{col}]` | add / modify / drop column |
 | `POST/DELETE` | `…/tables/{table}/indexes[/{idx}]` | add / drop index |
 | `POST` | `…/tables/{table}/copy` | copy table structure/data to another database |
@@ -411,6 +439,10 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET/POST` | `/api/connections/{id}/schema-versions` | list / seal schema snapshots |
 | `GET/DELETE` | `/api/connections/{id}/schema-versions/{versionId}` | get / delete a snapshot |
 | `POST` | `/api/connections/{id}/schema-versions/diff` | diff two versions or a version vs live |
+| `POST` | `/api/cross-diff` | schema/data diff between two connections |
+| `GET/POST/DELETE` | `/api/backups/files…` | list / download / delete / restore backup files |
+| `GET/POST` | `/api/connections/{id}/users/{host}/{user}/copy` | copy a user with grants |
+| `GET` | `/api/connections/{id}/privilege-matrix` | users × databases privilege matrix |
 
 ## License
 

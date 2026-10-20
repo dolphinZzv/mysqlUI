@@ -35,6 +35,7 @@ import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
 import type { QueryTabDef } from "@/lib/tabs";
 import { useI18n } from "@/lib/i18n";
 import { findPinnedQuery, pinQuery, unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
+import { readQueryDraft, writeQueryDraft } from "@/lib/queryDrafts";
 import { formatSQL } from "@/lib/sqlFormat";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,8 @@ import { ExplainDialog } from "@/components/ExplainDialog";
 import { SqlEditor, type SqlSchema } from "@/components/SqlEditor";
 import { QueryBuilder } from "@/components/QueryBuilder";
 import { SnippetPanel } from "@/components/SnippetPanel";
+import { ParameterDialog } from "@/components/ParameterDialog";
+import { extractParams } from "@/lib/sqlParams";
 
 interface Props {
   tab: QueryTabDef;
@@ -122,9 +125,14 @@ export function QueryTab({ tab, connections }: Props) {
   const [database, setDatabase] = useState(tab.database || "");
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [schema, setSchema] = useState<SqlSchema>({ tables: [] });
-  const [sql, setSql] = useState("");
+  const [sql, setSql] = useState(() => tab.initialSql ?? readQueryDraft(tab.id)?.sql ?? "");
+  const selectionRef = useRef<{ start: number; end: number } | undefined>(
+    tab.initialSelection ?? readQueryDraft(tab.id)?.selection
+  );
   const [result, setResult] = useState<QueryResult | null>(null);
   const [activeResult, setActiveResult] = useState(0);
+  const [resultSelected, setResultSelected] = useState<Set<number>>(new Set());
+  const [resultHidden, setResultHidden] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
@@ -151,6 +159,7 @@ export function QueryTab({ tab, connections }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastRunSql, setLastRunSql] = useState("");
   const [snippetsOpen, setSnippetsOpen] = useState(() => localStorage.getItem("mysqlui.snippetsOpen") === "1");
+  const [paramRequest, setParamRequest] = useState<{ sql: string; names: string[] } | null>(null);
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -185,6 +194,10 @@ export function QueryTab({ tab, connections }: Props) {
   }, [connectionId, database]);
 
   useEffect(() => {
+    writeQueryDraft(tab.id, { sql, selection: selectionRef.current });
+  }, [sql, tab.id]);
+
+  useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { id: string; sql: string };
       if (detail?.id === tab.id) setSql(detail.sql);
@@ -201,47 +214,63 @@ export function QueryTab({ tab, connections }: Props) {
     });
   };
 
-  const run = useCallback(async (override?: string) => {
-    const text = (override ?? sql).trim();
-    if (!text) return;
-    if (!connectionId) {
-      toast.error(t("query.connection", "Connection") + " ?");
-      return;
-    }
-    if (/^\s*(DROP|TRUNCATE)\b/i.test(text) && !window.confirm("This looks destructive. Run it anyway?")) {
-      return;
-    }
-    const runId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
-    canceledRef.current = false;
-    setActiveRunId(runId);
-    setRunning(true);
-    setError(null);
-    try {
-      const res = await api.runQuery(connectionId, database, text, {
-        runId,
-        sessionId: sessionIdRef.current,
-        timeoutSec,
-        pageSize: QUERY_PAGE_SIZE,
-        pageOffset: 0,
-      });
-      setResult(res);
-      setLastRunSql(text);
-      const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
-      setActiveResult(Math.max(0, count - 1));
-      if (/^\s*(BEGIN|START\s+TRANSACTION)\b/i.test(text)) setInTransaction(true);
-      else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(text)) setInTransaction(false);
-      pushHistory(text);
-    } catch (err) {
-      setResult(null);
-      setActiveResult(0);
-      if (canceledRef.current) setInTransaction(false);
-      setError(canceledRef.current ? t("query.canceled", "Query canceled") : err instanceof Error ? err.message : String(err));
-    } finally {
-      setActiveRunId(null);
-      setRunning(false);
-    }
+  const runRaw = useCallback(
+    async (text: string) => {
+      if (!text) return;
+      if (!connectionId) {
+        toast.error(t("query.connection", "Connection") + " ?");
+        return;
+      }
+      if (/^\s*(DROP|TRUNCATE)\b/i.test(text) && !window.confirm("This looks destructive. Run it anyway?")) {
+        return;
+      }
+      const runId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+      canceledRef.current = false;
+      setActiveRunId(runId);
+      setRunning(true);
+      setError(null);
+      try {
+        const res = await api.runQuery(connectionId, database, text, {
+          runId,
+          sessionId: sessionIdRef.current,
+          timeoutSec,
+          pageSize: QUERY_PAGE_SIZE,
+          pageOffset: 0,
+        });
+        setResult(res);
+        setLastRunSql(text);
+        const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
+        setActiveResult(Math.max(0, count - 1));
+        if (/^\s*(BEGIN|START\s+TRANSACTION)\b/i.test(text)) setInTransaction(true);
+        else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(text)) setInTransaction(false);
+        pushHistory(text);
+      } catch (err) {
+        setResult(null);
+        setActiveResult(0);
+        if (canceledRef.current) setInTransaction(false);
+        setError(canceledRef.current ? t("query.canceled", "Query canceled") : err instanceof Error ? err.message : String(err));
+      } finally {
+        setActiveRunId(null);
+        setRunning(false);
+      }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sql, connectionId, database, timeoutSec, t]);
+    [connectionId, database, timeoutSec, t]
+  );
+
+  const run = useCallback(
+    (override?: string) => {
+      const text = (override ?? sql).trim();
+      if (!text) return;
+      const names = extractParams(text);
+      if (names.length > 0) {
+        setParamRequest({ sql: text, names });
+        return;
+      }
+      void runRaw(text);
+    },
+    [sql, runRaw]
+  );
 
   const cancel = useCallback(async () => {
     if (!activeRunId || !connectionId) return;
@@ -331,25 +360,45 @@ export function QueryTab({ tab, connections }: Props) {
   }, [result]);
   const currentResult = resultSets[activeResult] ?? resultSets[resultSets.length - 1] ?? null;
 
+  useEffect(() => {
+    setResultSelected(new Set());
+    setResultHidden(new Set());
+  }, [currentResult]);
+
+  const exportData = useMemo(() => {
+    if (!currentResult) return { columns: [] as string[], rows: [] as unknown[][] };
+    const visible = currentResult.columns
+      .map((name, index) => ({ name, index }))
+      .filter((c) => !resultHidden.has(c.name));
+    const rows =
+      resultSelected.size > 0
+        ? currentResult.rows.filter((_, index) => resultSelected.has(index))
+        : currentResult.rows;
+    return {
+      columns: visible.map((c) => c.name),
+      rows: rows.map((row) => visible.map((c) => row[c.index])),
+    };
+  }, [currentResult, resultHidden, resultSelected]);
+
   const copyResult = (kind: "insert" | "csv") => {
     if (!currentResult) return;
     const text =
       kind === "insert"
-        ? toINSERT(database, currentResult.columns, currentResult.rows)
-        : toCSV(currentResult.columns, currentResult.rows);
+        ? toINSERT(database, exportData.columns, exportData.rows)
+        : toCSV(exportData.columns, exportData.rows);
     void navigator.clipboard.writeText(text).then(() => toast.success(t("structure.copied", "Copied")));
   };
 
   const exportResult = (kind: "csv" | "json" | "sql" | "xls") => {
     if (!currentResult) return;
-    if (kind === "csv") download("result.csv", toCSV(currentResult.columns, currentResult.rows), "text/csv");
-    else if (kind === "sql") download("result.sql", toINSERT(database, currentResult.columns, currentResult.rows), "application/sql");
-    else if (kind === "xls") download("result.xls", toXLS(currentResult.columns, currentResult.rows), "application/vnd.ms-excel");
+    if (kind === "csv") download("result.csv", toCSV(exportData.columns, exportData.rows), "text/csv");
+    else if (kind === "sql") download("result.sql", toINSERT(database, exportData.columns, exportData.rows), "application/sql");
+    else if (kind === "xls") download("result.xls", toXLS(exportData.columns, exportData.rows), "application/vnd.ms-excel");
     else
       download(
         "result.json",
         JSON.stringify(
-          currentResult.rows.map((r) => Object.fromEntries(currentResult.columns.map((c, i) => [c, r[i]]))),
+          exportData.rows.map((r) => Object.fromEntries(exportData.columns.map((c, i) => [c, r[i]]))),
           null,
           2,
         ),
@@ -619,6 +668,10 @@ export function QueryTab({ tab, connections }: Props) {
             schema={schema}
             placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
             className="h-56 shrink-0 border-b"
+            initialSelection={tab.initialSelection}
+            onSelection={(selection) => {
+              selectionRef.current = selection;
+            }}
           />
         )}
   
@@ -673,14 +726,26 @@ export function QueryTab({ tab, connections }: Props) {
                 <DropdownMenuTrigger asChild>
                   <Button size="sm" variant="outline">
                     <Download /> {t("table.export", "Export")}
+                    {resultSelected.size > 0 ? ` (${resultSelected.size})` : ""}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuLabel className="text-[11px] text-muted-foreground">
+                    {resultSelected.size > 0
+                      ? `Selected rows and visible columns only`
+                      : `All rows and ${exportData.columns.length} visible column(s)`}
+                  </DropdownMenuLabel>
                   <DropdownMenuItem onClick={() => exportResult("csv")}>
                     <FileSpreadsheet /> {t("query.exportCsv", "CSV")}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => exportResult("json")}>
                     <FileJson /> {t("query.exportJson", "JSON")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => exportResult("sql")}>
+                    <FileText /> SQL (INSERT)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => exportResult("xls")}>
+                    <FileSpreadsheet /> Excel
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => copyResult("csv")}>
@@ -726,7 +791,14 @@ export function QueryTab({ tab, connections }: Props) {
                 storageKey={`query:${connectionId}:${database}:${activeResult}`}
               />
             ) : (
-              <ResultGrid columns={currentResult.columns} rows={currentResult.rows} />
+              <ResultGrid
+                columns={currentResult.columns}
+                rows={currentResult.rows}
+                selected={resultSelected}
+                onSelectedChange={setResultSelected}
+                hidden={resultHidden}
+                onHiddenChange={setResultHidden}
+              />
             )
           ) : result ? (
             <div className="flex h-full items-center justify-center">
@@ -762,6 +834,21 @@ export function QueryTab({ tab, connections }: Props) {
           database={database}
         />
       </div>
+
+      <ParameterDialog
+        open={paramRequest !== null}
+        onOpenChange={(open) => {
+          if (!open) setParamRequest(null);
+        }}
+        sql={paramRequest?.sql ?? ""}
+        names={paramRequest?.names ?? []}
+        connectionName={connection?.name ?? tab.connectionName}
+        database={database}
+        onRun={(expanded) => {
+          setParamRequest(null);
+          void runRaw(expanded);
+        }}
+      />
 
       <ExplainDialog
         open={explainOpen}

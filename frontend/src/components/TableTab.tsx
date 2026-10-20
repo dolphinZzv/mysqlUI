@@ -6,11 +6,13 @@ import {
   ClipboardPaste,
   Database as DatabaseIcon,
   GitCompare,
+  HardDrive,
   Layers,
   Loader2,
   Plus,
   RefreshCw,
   Search,
+  Star,
   Table2,
   Trash2,
   X,
@@ -48,6 +50,17 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { CellViewer } from "@/components/CellViewer";
 import { PasteRowsDialog } from "@/components/PasteRowsDialog";
 import { DataDiffDialog } from "@/components/DataDiffDialog";
+import { PasteCellsDialog, type PasteCellChange } from "@/components/PasteCellsDialog";
+import { StatsDialog } from "@/components/StatsDialog";
+import { useFavorites } from "@/lib/favorites";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface Props {
   tab: TableTabDef;
@@ -57,6 +70,20 @@ interface Props {
 }
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000];
+
+interface PendingEdit {
+  rowIndex: number;
+  pk: Record<string, unknown>;
+  column: string;
+  oldValue: unknown;
+  newValue: unknown;
+}
+
+function sqlValue(value: unknown): string {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "'" + String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+}
 
 export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [view, setView] = useState<"data" | "structure">("data");
@@ -79,6 +106,18 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [cellViewer, setCellViewer] = useState<{ open: boolean; rowIndex: number; column: string } | null>(null);
+  const [pending, setPending] = useState<PendingEdit[]>([]);
+  const [commitBusy, setCommitBusy] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [pasteCells, setPasteCells] = useState<{
+    open: boolean;
+    changes: PasteCellChange[];
+    invalid: string[];
+    start: string;
+  } | null>(null);
+  const { isFavorite, toggle } = useFavorites();
+  const favorite = isFavorite({ kind: "table", connectionId: tab.connectionId, database: tab.database, table: tab.table });
 
   const loadStructure = useCallback(async () => {
     try {
@@ -95,6 +134,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     async (p: number, size: number) => {
       setLoading(true);
       setError(null);
+      setPending([]);
       try {
         const res = await api.tableData(
           tab.connectionId,
@@ -171,23 +211,126 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     return pk;
   };
 
-  const handleUpdateCell = async (rowIndex: number, column: string, value: unknown) => {
-    const pk = buildPrimaryKey(rowIndex);
-    if (!pk) {
-      toast.error("Cannot edit", {
-        description: "This table has no primary key, so rows cannot be targeted safely.",
+  const queueChanges = (changes: PasteCellChange[]) => {
+    if (!data || changes.length === 0) return;
+    const nextRows = data.rows.map((row) => [...row]);
+    const nextPending = [...pending];
+    for (const change of changes) {
+      const colIndex = data.columns.indexOf(change.column);
+      if (change.rowIndex < 0 || change.rowIndex >= nextRows.length || colIndex < 0) continue;
+      const existing = nextPending.find((p) => p.rowIndex === change.rowIndex && p.column === change.column);
+      const rowPk = nextPending.find((p) => p.rowIndex === change.rowIndex)?.pk;
+      const pk = existing?.pk ?? rowPk ?? buildPrimaryKey(change.rowIndex);
+      if (!pk) {
+        toast.error("Cannot edit", {
+          description: "This table has no primary key, so rows cannot be targeted safely.",
+        });
+        return;
+      }
+      const oldValue = existing ? existing.oldValue : nextRows[change.rowIndex][colIndex];
+      if (existing) nextPending.splice(nextPending.indexOf(existing), 1);
+      nextPending.push({
+        rowIndex: change.rowIndex,
+        pk,
+        column: change.column,
+        oldValue,
+        newValue: change.value,
       });
-      throw new Error("no primary key");
+      nextRows[change.rowIndex][colIndex] = change.value;
     }
-    await api.updateRow(tab.connectionId, tab.database, tab.table, { [column]: value }, pk);
-    setData((prev) => {
-      if (!prev) return prev;
-      const rows = prev.rows.map((r, i) =>
-        i === rowIndex ? r.map((c, j) => (prev.columns[j] === column ? value : c)) : r
-      );
-      return { ...prev, rows };
+    setData((prev) => (prev ? { ...prev, rows: nextRows } : prev));
+    setPending(nextPending);
+  };
+
+  const handleUpdateCell = async (rowIndex: number, column: string, value: unknown) => {
+    queueChanges([{ rowIndex, column, value }]);
+  };
+
+  const handlePasteRange = (startRow: number, startColumn: number, matrix: string[][]) => {
+    if (!data) return;
+    const changes: PasteCellChange[] = [];
+    const invalid: string[] = [];
+    for (let r = 0; r < matrix.length; r++) {
+      for (let c = 0; c < matrix[r].length; c++) {
+        const rowIndex = startRow + r;
+        const colIndex = startColumn + c;
+        const column = data.columns[colIndex];
+        if (!column || rowIndex >= data.rows.length) {
+          invalid.push(`row ${rowIndex + 1}, column ${colIndex + 1} is outside the current page`);
+          continue;
+        }
+        const raw = matrix[r][c];
+        const meta = columnsMeta.find((m) => m.name === column);
+        const value = raw.toUpperCase() === "NULL" ? null : raw === "" && meta?.nullable ? null : raw;
+        changes.push({ rowIndex, column, value });
+      }
+    }
+    setPasteCells({
+      open: true,
+      changes,
+      invalid,
+      start: `row ${startRow + 1}, column ${data.columns[startColumn] ?? startColumn + 1}`,
     });
-    toast.success(`Updated "${column}"`);
+  };
+
+  const rollbackPending = () => {
+    if (!data || pending.length === 0) return;
+    const rows = data.rows.map((row) => [...row]);
+    for (const edit of pending) {
+      const colIndex = data.columns.indexOf(edit.column);
+      if (colIndex >= 0 && rows[edit.rowIndex]) rows[edit.rowIndex][colIndex] = edit.oldValue;
+    }
+    setData((prev) => (prev ? { ...prev, rows } : prev));
+    setPending([]);
+    toast.info("Pending changes rolled back");
+  };
+
+  const commitPending = async () => {
+    if (pending.length === 0) return;
+    const groups = new Map<string, { data: Record<string, unknown>; primaryKey: Record<string, unknown> }>();
+    for (const edit of pending) {
+      const key = JSON.stringify(edit.pk);
+      const group = groups.get(key) ?? { data: {}, primaryKey: edit.pk };
+      group.data[edit.column] = edit.newValue;
+      groups.set(key, group);
+    }
+    setCommitBusy(true);
+    try {
+      const res = await api.bulkUpdateRows(
+        tab.connectionId,
+        tab.database,
+        tab.table,
+        Array.from(groups.values())
+      );
+      toast.success(`Committed ${res.updated} row(s) in one transaction`);
+      setPending([]);
+      await loadData(page, pageSize);
+    } catch (err) {
+      toast.error("Batch update rolled back", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setCommitBusy(false);
+    }
+  };
+
+  const pendingPreviewSQL = () => {
+    const groups = new Map<string, { data: Record<string, unknown>; primaryKey: Record<string, unknown> }>();
+    for (const edit of pending) {
+      const key = JSON.stringify(edit.pk);
+      const group = groups.get(key) ?? { data: {}, primaryKey: edit.pk };
+      group.data[edit.column] = edit.newValue;
+      groups.set(key, group);
+    }
+    return Array.from(groups.values()).map((group) => {
+      const sets = Object.entries(group.data)
+        .map(([column, value]) => `\`${column}\` = ${sqlValue(value)}`)
+        .join(", ");
+      const where = Object.entries(group.primaryKey)
+        .map(([column, value]) => `\`${column}\` = ${sqlValue(value)}`)
+        .join(" AND ");
+      return `UPDATE \`${tab.table}\` SET ${sets} WHERE ${where};`;
+    });
   };
 
   const confirmDelete = async () => {
@@ -278,6 +421,22 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <Table2 className="h-4 w-4 text-emerald-400" />
         <span className="font-mono text-sm font-medium">{tab.table}</span>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          title={favorite ? "Remove from favorites" : "Add to favorites"}
+          onClick={() =>
+            toggle({
+              kind: "table",
+              connectionId: tab.connectionId,
+              connectionName: tab.connectionName,
+              database: tab.database,
+              table: tab.table,
+            })
+          }
+        >
+          <Star className={favorite ? "fill-amber-400 text-amber-400" : undefined} />
+        </Button>
         <span className="flex items-center gap-1 text-xs text-muted-foreground">
           <DatabaseIcon className="h-3 w-3" />
           {tab.database}
@@ -310,6 +469,9 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           </Button>
           <Button size="sm" variant="outline" onClick={() => setDiffOpen(true)}>
             <GitCompare /> Compare
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setStatsOpen(true)}>
+            <HardDrive /> Stats
           </Button>
           <Button size="sm" variant="outline" onClick={() => void loadData(page, pageSize)} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
@@ -406,6 +568,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             primaryKey={data.primaryKey}
             foreignKeys={structure?.foreignKeys ?? []}
             tableName={tab.table}
+            storageKey={`${tab.connectionId}:${tab.database}:${tab.table}`}
             orderBy={orderBy}
             onSort={toggleSort}
             onUpdateCell={handleUpdateCell}
@@ -413,6 +576,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             onDuplicateRow={(r) => { setDuplicateRow(r); setAddOpen(true); }}
             onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
             onJump={(fk, value) => onOpenRef?.(fk, value)}
+            onPasteRange={handlePasteRange}
             selected={selected}
             onSelectedChange={setSelected}
           />
@@ -424,6 +588,25 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         {loading && data && (
           <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-2 rounded-md border bg-card/90 px-2 py-1 text-xs shadow">
             <Loader2 className="h-3 w-3 animate-spin" /> loading…
+          </div>
+        )}
+        {view === "data" && pending.length > 0 && (
+          <div className="absolute bottom-3 left-3 right-3 z-30 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/40 bg-card/95 px-3 py-2 text-sm shadow-lg">
+            <span className="font-medium text-amber-600 dark:text-amber-400">
+              {pending.length} pending change(s)
+            </span>
+            <span className="text-xs text-muted-foreground">Nothing has been written yet.</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}>
+                Preview SQL
+              </Button>
+              <Button size="sm" variant="outline" onClick={rollbackPending} disabled={commitBusy}>
+                Rollback
+              </Button>
+              <Button size="sm" onClick={() => void commitPending()} disabled={commitBusy}>
+                {commitBusy ? <Loader2 className="animate-spin" /> : null} Commit all
+              </Button>
+            </div>
           </div>
         )}
         {view === "data" && selected.size > 0 && (
@@ -462,6 +645,49 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         database={tab.database}
         table={tab.table}
       />
+      {pasteCells && (
+        <PasteCellsDialog
+          open={pasteCells.open}
+          onOpenChange={(open) => setPasteCells((prev) => (prev ? { ...prev, open } : prev))}
+          changes={pasteCells.changes}
+          invalid={pasteCells.invalid}
+          start={pasteCells.start}
+          onApply={() => {
+            queueChanges(pasteCells.changes);
+            setPasteCells(null);
+            toast.success(`Added ${pasteCells.changes.length} cell change(s) to the pending batch`);
+          }}
+        />
+      )}
+      <StatsDialog
+        open={statsOpen}
+        onOpenChange={setStatsOpen}
+        connectionId={tab.connectionId}
+        database={tab.database}
+        table={tab.table}
+      />
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Pending batch preview</DialogTitle>
+            <DialogDescription>
+              {pending.length} change(s) will run in a single transaction. A failure rolls back the whole batch.
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="scrollbar-thin max-h-80 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[12px]">
+            {pendingPreviewSQL().join("\n")}
+          </pre>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPreviewOpen(false)}>
+              Close
+            </Button>
+            <Button onClick={() => { setPreviewOpen(false); void commitPending(); }} disabled={commitBusy}>
+              Commit all
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <PasteRowsDialog
         open={pasteOpen}
         onOpenChange={setPasteOpen}

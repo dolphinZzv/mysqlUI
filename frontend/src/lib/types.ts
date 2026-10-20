@@ -438,3 +438,69 @@ export interface BackupStatus {
   lastError?: string;
   running: boolean;
 }
+
+export interface DatabaseStats {
+  database: string;
+  tables: number;
+  rows: number;
+  dataLength: number;
+  indexLength: number;
+  freeLength: number;
+  charset: string;
+  collation: string;
+}
+
+export interface BackupFile {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+  modified: string;
+  connection: string;
+  database: string;
+}
+
+export interface CrossDiffResult {
+  source: string;
+  target: string;
+  schema?: SchemaDiffResult;
+  data?: DataDiffResult;
+}
+
+export interface ConnectionTestSummary {
+  id: string;
+  name: string;
+  connected: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+export interface ConnectionExport {
+  version: number;
+  exportedAt: string;
+  passwords: boolean;
+  connections: Connection[];
+}
+
+export interface ConnectionImportResult {
+  imported: Connection[];
+  skipped: { name: string; reason: string }[];
+  renamed: boolean;
+}
+
+export interface PrivilegeMatrixUser {
+  user: string;
+  host: string;
+  global: Record<string, boolean>;
+  databases: Record<string, {
+    flags: Record<string, boolean>;
+    inherited: boolean;
+    tables: { table: string; flags: Record<string, boolean> }[];
+  }>;
+}
+
+export interface PrivilegeMatrix {
+  users: PrivilegeMatrixUser[];
+  databases: string[];
+  flags: string[];
+}

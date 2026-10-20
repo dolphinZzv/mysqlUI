@@ -24,6 +24,7 @@ import {
   Search,
   Server,
   Share2,
+  Star,
   Table2,
   Terminal,
   Trash2,
@@ -37,10 +38,12 @@ import type { Connection, CreateTableRequest, DatabaseInfo, ServerInfo, TableInf
 import type { GenericTabKind } from "@/lib/tabs";
 import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { useRecentTables } from "@/lib/recentObjects";
+import { useFavorites } from "@/lib/favorites";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { HardDrive } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,6 +73,7 @@ import { CopyTableDialog } from "@/components/CopyTableDialog";
 import { CreateDatabaseDialog } from "@/components/CreateDatabaseDialog";
 import { ViewDialog } from "@/components/ViewDialog";
 import { DbFlavorIcon } from "@/components/DbFlavorIcon";
+import { StatsDialog } from "@/components/StatsDialog";
 
 interface Props {
   connections: Connection[];
@@ -103,6 +107,7 @@ export function Sidebar({
   const [filter, setFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
   const recentTables = useRecentTables();
+  const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
   const [expandedConns, setExpandedConns] = useState<Set<string>>(new Set());
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [dbs, setDbs] = useState<Record<string, DatabaseInfo[]>>({});
@@ -132,6 +137,7 @@ export function Sidebar({
     database: string;
   }>({ open: false, connection: null, database: "" });
   const [pendingDropDb, setPendingDropDb] = useState<{ connection: Connection; database: string } | null>(null);
+  const [statsTarget, setStatsTarget] = useState<{ connection: Connection; database: string } | null>(null);
 
   const markLoading = (key: string, on: boolean) =>
     setLoading((prev) => {
@@ -345,6 +351,48 @@ export function Sidebar({
           </div>
         )}
 
+        {favorites.filter((f) => connections.some((c) => c.id === f.connectionId)).length > 0 && (
+          <div className="mb-2 border-b border-sidebar-border pb-1.5">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Star className="h-3 w-3 fill-amber-400 text-amber-400" /> Favorites
+            </div>
+            {favorites
+              .filter((f) => connections.some((c) => c.id === f.connectionId))
+              .map((f) => {
+                const conn = connections.find((c) => c.id === f.connectionId);
+                if (!conn) return null;
+                return (
+                  <div
+                    key={`${f.kind}:${f.connectionId}:${f.database}:${f.table ?? ""}`}
+                    className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] hover:bg-sidebar-accent"
+                    title={`${f.connectionName} / ${f.database}${f.table ? `.${f.table}` : ""}`}
+                    onClick={() => {
+                      if (f.kind === "table" && f.table) onOpenTable(conn, f.database, f.table);
+                      else toggleDatabase(conn, f.database);
+                    }}
+                  >
+                    {f.kind === "table" ? (
+                      <Table2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                    ) : (
+                      <DatabaseIcon className="h-3.5 w-3.5 shrink-0 text-sky-400" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{f.table ?? f.database}</span>
+                    <button
+                      className="rounded p-0.5 opacity-0 transition-opacity hover:bg-background/60 group-hover:opacity-100"
+                      title="Remove favorite"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite(f);
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
         {recentTables.filter((r) => connections.some((c) => c.id === r.connectionId)).length > 0 && (
           <div className="mb-2 border-b border-sidebar-border pb-1.5">
             <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -490,6 +538,9 @@ export function Sidebar({
                         <DropdownMenuItem onClick={() => onOpenGeneric("users", conn)}>
                           <Users /> Users
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onOpenGeneric("crossdiff", conn)}>
+                          <GitCompare /> Cross-connection diff
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => refreshConnection(conn)}>
                           <RefreshCw /> Refresh
                         </DropdownMenuItem>
@@ -533,6 +584,9 @@ export function Sidebar({
                   </ContextMenuItem>
                   <ContextMenuItem onClick={() => onOpenGeneric("users", conn)}>
                     <Users /> Users
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => onOpenGeneric("crossdiff", conn)}>
+                    <GitCompare /> Cross-connection diff
                   </ContextMenuItem>
                   <ContextMenuItem onClick={() => refreshConnection(conn)}>
                     <RefreshCw /> Refresh
@@ -633,6 +687,9 @@ export function Sidebar({
                               <ContextMenuItem onClick={() => onOpenGeneric("versions", conn, db.name)}>
                                 <History /> Schema versions
                               </ContextMenuItem>
+                              <ContextMenuItem onClick={() => setStatsTarget({ connection: conn, database: db.name })}>
+                                <HardDrive /> Capacity stats
+                              </ContextMenuItem>
                               <ContextMenuSeparator />
                               <ContextMenuItem
                                 onClick={() => {
@@ -660,6 +717,29 @@ export function Sidebar({
                                 <Trash2 /> Drop database
                               </ContextMenuItem>
                               <ContextMenuSeparator />
+                              <ContextMenuItem
+                                onClick={() =>
+                                  toggleFavorite({
+                                    kind: "database",
+                                    connectionId: conn.id,
+                                    connectionName: conn.name,
+                                    database: db.name,
+                                  })
+                                }
+                              >
+                                <Star
+                                  className={cn(
+                                    isFavorite({
+                                      kind: "database",
+                                      connectionId: conn.id,
+                                      database: db.name,
+                                    }) && "fill-amber-400 text-amber-400"
+                                  )}
+                                />
+                                {isFavorite({ kind: "database", connectionId: conn.id, database: db.name })
+                                  ? "Remove from favorites"
+                                  : "Add to favorites"}
+                              </ContextMenuItem>
                               <ContextMenuItem onClick={() => copy(db.name, "Database name copied")}>
                                 <Copy /> Copy name
                               </ContextMenuItem>
@@ -718,6 +798,36 @@ export function Sidebar({
                                         }
                                       >
                                         <CopyPlus /> Copy table…
+                                      </ContextMenuItem>
+                                      <ContextMenuItem
+                                        onClick={() =>
+                                          toggleFavorite({
+                                            kind: "table",
+                                            connectionId: conn.id,
+                                            connectionName: conn.name,
+                                            database: db.name,
+                                            table: table.name,
+                                          })
+                                        }
+                                      >
+                                        <Star
+                                          className={cn(
+                                            isFavorite({
+                                              kind: "table",
+                                              connectionId: conn.id,
+                                              database: db.name,
+                                              table: table.name,
+                                            }) && "fill-amber-400 text-amber-400"
+                                          )}
+                                        />
+                                        {isFavorite({
+                                          kind: "table",
+                                          connectionId: conn.id,
+                                          database: db.name,
+                                          table: table.name,
+                                        })
+                                          ? "Remove from favorites"
+                                          : "Add to favorites"}
                                       </ContextMenuItem>
                                       <ContextMenuItem onClick={() => copy(table.name, "Table name copied")}>
                                         <Copy /> Copy name
@@ -849,6 +959,12 @@ export function Sidebar({
           }}
         />
       )}
+      <StatsDialog
+        open={statsTarget !== null}
+        onOpenChange={(open) => !open && setStatsTarget(null)}
+        connectionId={statsTarget?.connection.id ?? ""}
+        database={statsTarget?.database ?? ""}
+      />
     </div>
   );
 }

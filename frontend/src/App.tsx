@@ -8,6 +8,7 @@ import {
   Moon,
   MoreVertical,
   PanelLeftClose,
+  ServerCog,
   PanelLeftOpen,
   Plus,
   RefreshCw,
@@ -33,6 +34,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Sidebar } from "@/components/Sidebar";
 import { ConnectionDialog } from "@/components/ConnectionDialog";
 import { TableTab } from "@/components/TableTab";
@@ -41,6 +49,7 @@ import { MonitorTab } from "@/components/MonitorTab";
 import { UsersTab } from "@/components/UsersTab";
 import { ErdView } from "@/components/ErdView";
 import { SchemaDiffView } from "@/components/SchemaDiffView";
+import { CrossDiffView } from "@/components/CrossDiffView";
 import { RoutinesView } from "@/components/RoutinesView";
 import { SchemaVersionsView } from "@/components/SchemaVersionsView";
 import { ObjectSearch } from "@/components/ObjectSearch";
@@ -48,7 +57,9 @@ import { ImportDialog } from "@/components/ImportDialog";
 import { LoginScreen } from "@/components/LoginScreen";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { BackupDialog } from "@/components/BackupDialog";
+import { ConnectionsToolsDialog } from "@/components/ConnectionsToolsDialog";
 import { useRouter, sameRoute, type Route } from "@/lib/router";
+import { readQueryDraft, deleteQueryDraft } from "@/lib/queryDrafts";
 import { recordRecentTable } from "@/lib/recentObjects";
 
 const THEME_KEY = "mysqlui.theme";
@@ -72,6 +83,7 @@ const GENERIC_TITLES: Record<GenericTabKind, string> = {
   users: "Users",
   erd: "ER diagram",
   diff: "Schema diff",
+  crossdiff: "Cross-connection diff",
   routines: "Routines",
   versions: "Schema versions",
 };
@@ -143,6 +155,7 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
+  const [connectionsToolsOpen, setConnectionsToolsOpen] = useState(false);
   const [importState, setImportState] = useState<{
     open: boolean;
     connection: Connection | null;
@@ -373,10 +386,60 @@ export default function App() {
     const idx = tabs.findIndex((x) => x.id === id);
     const next = tabs.filter((x) => x.id !== id);
     setTabs(next);
+    deleteQueryDraft(id);
     if (activeId === id) {
       const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1];
       setActiveId(fallback ? fallback.id : null);
     }
+  };
+
+  const closeTabs = (ids: string[]) => {
+    const remove = new Set(ids);
+    if (remove.size === 0) return;
+    const next = tabs.filter((x) => !remove.has(x.id));
+    for (const id of remove) deleteQueryDraft(id);
+    setTabs(next);
+    if (activeId && remove.has(activeId)) {
+      setActiveId(next.length ? next[next.length - 1].id : null);
+    }
+  };
+
+  const closeOtherTabs = (id: string) => {
+    closeTabs(tabs.filter((x) => x.id !== id).map((x) => x.id));
+    setActiveId(id);
+  };
+
+  const closeTabsToRight = (id: string) => {
+    const index = tabs.findIndex((x) => x.id === id);
+    if (index < 0) return;
+    closeTabs(tabs.slice(index + 1).map((x) => x.id));
+  };
+
+  const renameTabLabel = (id: string) => {
+    const tab = tabs.find((x) => x.id === id);
+    if (!tab) return;
+    const value = window.prompt("Tab name", tab.customTitle ?? tab.title);
+    if (value === null) return;
+    const name = value.trim();
+    setTabs((prev) => prev.map((x) => (x.id === id ? { ...x, customTitle: name || undefined } : x)));
+  };
+
+  const duplicateQueryTab = (id: string) => {
+    const tab = tabs.find((x) => x.id === id);
+    if (!tab || tab.kind !== "query") return;
+    const draft = readQueryDraft(id);
+    const newId = `query:${tab.connectionId}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
+    const copy: TabDef = {
+      ...tab,
+      id: newId,
+      customTitle: undefined,
+      title: `${tab.customTitle ?? tab.title} (copy)`,
+      initialSql: draft?.sql ?? tab.initialSql ?? "",
+      initialSelection: draft?.selection ?? tab.initialSelection,
+    };
+    const index = tabs.findIndex((x) => x.id === id);
+    setTabs((prev) => [...prev.slice(0, index + 1), copy, ...prev.slice(index + 1)]);
+    setActiveId(newId);
   };
 
   const reorderTabs = (fromId: string, toId: string) => {
@@ -395,7 +458,11 @@ export default function App() {
     const target = tabs.find((x) => x.id === oldId);
     if (!target || target.kind !== "table") return;
     const newId = tableTabId(target.connectionId, target.database, newName);
-    setTabs((prev) => prev.map((x) => (x.id === oldId ? { ...x, id: newId, table: newName, title: newName } : x)));
+    setTabs((prev) =>
+      prev.map((x) =>
+        x.id === oldId ? { ...x, id: newId, table: newName, title: newName, customTitle: undefined } : x
+      )
+    );
     setActiveId((prev) => (prev === oldId ? newId : prev));
   };
 
@@ -514,6 +581,9 @@ export default function App() {
                 <DropdownMenuItem onClick={() => setBackupOpen(true)}>
                   <HardDriveDownload /> {t("app.backups", "Scheduled backups")}
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setConnectionsToolsOpen(true)}>
+                  <ServerCog /> {t("app.connectionTools", "Connection tools")}
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
@@ -568,36 +638,62 @@ export default function App() {
                 {tabs.map((tab) => {
                   const active = tab.id === activeId;
                   return (
-                    <div
-                      key={tab.id}
-                      draggable
-                      onDragStart={() => setDragTabId(tab.id)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => {
-                        if (dragTabId && dragTabId !== tab.id) reorderTabs(dragTabId, tab.id);
-                        setDragTabId(null);
-                      }}
-                      onDragEnd={() => setDragTabId(null)}
-                      className={cn(
-                        "group flex min-w-[140px] max-w-[240px] cursor-pointer items-center gap-2 border-r px-3 text-[13px] transition-colors",
-                        active ? "bg-background text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                      )}
-                      onClick={() => setActiveId(tab.id)}
-                    >
-                      <TabIcon kind={tab.kind} />
-                      <span className="min-w-0 flex-1 truncate" title={tab.title}>
-                        {tab.title}
-                      </span>
-                      <button
-                        className="rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          closeTab(tab.id);
-                        }}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+                    <ContextMenu key={tab.id}>
+                      <ContextMenuTrigger asChild>
+                        <div
+                          draggable
+                          onDragStart={() => setDragTabId(tab.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => {
+                            if (dragTabId && dragTabId !== tab.id) reorderTabs(dragTabId, tab.id);
+                            setDragTabId(null);
+                          }}
+                          onDragEnd={() => setDragTabId(null)}
+                          onAuxClick={(e) => {
+                            if (e.button === 1) {
+                              e.preventDefault();
+                              closeTab(tab.id);
+                            }
+                          }}
+                          className={cn(
+                            "group flex min-w-[140px] max-w-[240px] cursor-pointer items-center gap-2 border-r px-3 text-[13px] transition-colors",
+                            active ? "bg-background text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                          )}
+                          onClick={() => setActiveId(tab.id)}
+                        >
+                          <TabIcon kind={tab.kind} />
+                          <span className="min-w-0 flex-1 truncate" title={tab.customTitle ?? tab.title}>
+                            {tab.customTitle ?? tab.title}
+                          </span>
+                          <button
+                            className="rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              closeTab(tab.id);
+                            }}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuItem onClick={() => renameTabLabel(tab.id)}>Rename tab</ContextMenuItem>
+                        {tab.kind === "query" && (
+                          <ContextMenuItem onClick={() => duplicateQueryTab(tab.id)}>Duplicate tab</ContextMenuItem>
+                        )}
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onClick={() => closeTab(tab.id)}>Close</ContextMenuItem>
+                        <ContextMenuItem disabled={tabs.length <= 1} onClick={() => closeOtherTabs(tab.id)}>
+                          Close other tabs
+                        </ContextMenuItem>
+                        <ContextMenuItem
+                          disabled={tabs.findIndex((x) => x.id === tab.id) >= tabs.length - 1}
+                          onClick={() => closeTabsToRight(tab.id)}
+                        >
+                          Close tabs to the right
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   );
                 })}
               </div>
@@ -642,6 +738,12 @@ export default function App() {
       <ConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} connection={editing} onSaved={refreshConnections} />
       <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} />
       <BackupDialog open={backupOpen} onOpenChange={setBackupOpen} />
+      <ConnectionsToolsDialog
+        open={connectionsToolsOpen}
+        onOpenChange={setConnectionsToolsOpen}
+        connections={connections}
+        onChanged={() => void refreshConnections()}
+      />
 
       <ObjectSearch
         open={searchOpen}
@@ -700,6 +802,8 @@ function renderTab(
       return <ErdView connectionId={tab.connectionId} database={tab.database} />;
     case "diff":
       return <SchemaDiffView connectionId={tab.connectionId} database={tab.database} />;
+    case "crossdiff":
+      return <CrossDiffView connections={connections} connectionId={tab.connectionId} database={tab.database} />;
     case "routines":
       return <RoutinesView connectionId={tab.connectionId} database={tab.database} />;
     case "versions":

@@ -49,6 +49,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/backups", s.backupStatusHandler)
 	mux.HandleFunc("PUT /api/backups", s.backupSettingsHandler)
 	mux.HandleFunc("POST /api/backups/run", s.backupRunHandler)
+	mux.HandleFunc("GET /api/backups/files", s.backupFilesList)
+	mux.HandleFunc("GET /api/backups/files/{fileId}/download", s.backupFileDownload)
+	mux.HandleFunc("DELETE /api/backups/files/{fileId}", s.backupFileDelete)
+	mux.HandleFunc("POST /api/backups/files/{fileId}/restore", s.backupFileRestore)
 
 	// self-update
 	mux.HandleFunc("GET /api/update", s.updateStatusHandler)
@@ -63,12 +67,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/connections/{id}", s.updateConnection)
 	mux.HandleFunc("DELETE /api/connections/{id}", s.deleteConnection)
 	mux.HandleFunc("POST /api/connections/test", s.testNewConnection)
+	mux.HandleFunc("POST /api/connections/test-all", s.testAllConnections)
+	mux.HandleFunc("GET /api/connections/export", s.exportConnections)
+	mux.HandleFunc("POST /api/connections/import", s.importConnections)
 	mux.HandleFunc("POST /api/connections/{id}/test", s.testExistingConnection)
+	mux.HandleFunc("POST /api/connections/{id}/clone", s.cloneConnection)
 	mux.HandleFunc("GET /api/connections/{id}/info", s.serverInfo)
 	mux.HandleFunc("GET /api/connections/{id}/databases", s.listDatabases)
 	mux.HandleFunc("POST /api/connections/{id}/databases", s.createDatabase)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}", s.dropDatabase)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/export", s.exportDatabase)
+	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/stats", s.databaseStats)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/tables", s.listTables)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/schema", s.databaseSchema)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables", s.createTable)
@@ -89,6 +98,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-delete", s.deleteRows)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-insert", s.bulkInsertRows)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-update", s.bulkUpdateRows)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/maintenance", s.tableMaintenance)
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/options", s.updateTableOptions)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
@@ -127,6 +137,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/revoke", s.revokePrivileges)
 	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/lock", s.lockUser)
 	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/copy-grants", s.copyGrants)
+	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/copy", s.copyUser)
+	mux.HandleFunc("GET /api/connections/{id}/privilege-matrix", s.privilegeMatrix)
 
 	// stored routines, triggers, events
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/routines", s.listRoutines)
@@ -149,6 +161,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/erd", s.erd)
 	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
 	mux.HandleFunc("POST /api/connections/{id}/data-diff", s.dataDiff)
+	mux.HandleFunc("POST /api/cross-diff", s.crossDiff)
 
 	// schema versions (snapshots / 封板)
 	mux.HandleFunc("GET /api/connections/{id}/schema-versions", s.listSchemaVersions)

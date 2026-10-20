@@ -34,6 +34,13 @@ import type {
   TableStructure,
   TriggerInfo,
   UserInfo,
+  BackupFile,
+  DatabaseStats,
+  CrossDiffResult,
+  ConnectionTestSummary,
+  ConnectionExport,
+  ConnectionImportResult,
+  PrivilegeMatrix,
 } from "./types";
 
 const BASE = "/api";
@@ -146,6 +153,17 @@ export const api = {
     request<ConnectionTestResult>("/connections/test", { method: "POST", body: JSON.stringify(input) }),
   testConnection: (id: string) =>
     request<ConnectionTestResult>(`${connBase(id)}/test`, { method: "POST", body: "{}" }),
+  testAllConnections: () =>
+    request<ConnectionTestSummary[]>("/connections/test-all", { method: "POST", body: "{}" }),
+  cloneConnection: (id: string) =>
+    request<{ connection: Connection }>(`${connBase(id)}/clone`, { method: "POST", body: "{}" }),
+  exportConnections: (passwords: boolean) =>
+    request<ConnectionExport>(`/connections/export?passwords=${passwords ? "true" : "false"}`),
+  importConnections: (connections: Connection[]) =>
+    request<ConnectionImportResult>("/connections/import", {
+      method: "POST",
+      body: JSON.stringify({ connections }),
+    }),
   serverInfo: (id: string) => request<ServerInfo>(`${connBase(id)}/info`),
 
   // schema
@@ -208,6 +226,8 @@ export const api = {
     filters?: FilterCondition[],
     q?: string
   ) => request<TableData>(`${tableBase(id, db, table)}/data?${dataQuery(limit, offset, orderBy, filters, q)}`),
+  databaseStats: (id: string, db: string) =>
+    request<DatabaseStats>(`${dbBase(id, db)}/stats`),
   tableStats: (id: string, db: string, table: string) =>
     request<{ rows: number; dataLength: number; indexLength: number; autoIncrement: number; engine: string; collation: string; comment: string; createTime: string; updateTime: string }>(
       `${tableBase(id, db, table)}/stats`
@@ -248,6 +268,16 @@ export const api = {
     request<{ ok: boolean; affected: number }>(`${tableBase(id, db, table)}/rows/bulk-insert`, {
       method: "POST",
       body: JSON.stringify({ columns, rows }),
+    }),
+  bulkUpdateRows: (
+    id: string,
+    db: string,
+    table: string,
+    changes: { data: Record<string, unknown>; primaryKey: Record<string, unknown> }[]
+  ) =>
+    request<{ ok: boolean; updated: number }>(`${tableBase(id, db, table)}/rows/bulk-update`, {
+      method: "POST",
+      body: JSON.stringify({ changes }),
     }),
   tableMaintenance: (id: string, db: string, table: string, operation: string) =>
     request<{ ok: boolean; operation: string }>(`${tableBase(id, db, table)}/maintenance`, {
@@ -330,6 +360,14 @@ export const api = {
   setBackupSettings: (body: { enabled: boolean; intervalHours: number; retentionDays: number; directory: string }) =>
     request<BackupStatus>("/backups", { method: "PUT", body: JSON.stringify(body) }),
   runBackup: () => request<BackupStatus>("/backups/run", { method: "POST" }),
+  listBackupFiles: () => request<BackupFile[]>("/backups/files"),
+  deleteBackupFile: (id: string) =>
+    request<{ ok: boolean }>(`/backups/files/${enc(id)}`, { method: "DELETE" }),
+  restoreBackupFile: (id: string, connectionId: string, database: string) =>
+    request<{ ok: boolean; statements: number }>(`/backups/files/${enc(id)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ connectionId, database }),
+    }),
 
   // self-update
   updateStatus: () => request<UpdateStatus>("/update"),
@@ -421,6 +459,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ locked }),
     }),
+  copyUser: (
+    id: string,
+    host: string,
+    user: string,
+    body: { targetUser: string; targetHost: string; password?: string; copyPassword?: boolean }
+  ) =>
+    request<{ ok: boolean; grants: number }>(`${connBase(id)}/users/${enc(host)}/${enc(user)}/copy`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  privilegeMatrix: (id: string) => request<PrivilegeMatrix>(`${connBase(id)}/privilege-matrix`),
   copyGrants: (id: string, host: string, user: string, targetUser: string, targetHost: string) =>
     request<{ ok: boolean; grants: number }>(`${connBase(id)}/users/${enc(host)}/${enc(user)}/copy-grants`, {
       method: "POST",
@@ -457,6 +506,15 @@ export const api = {
     id: string,
     body: { sourceDatabase: string; sourceTable: string; targetDatabase: string; targetTable: string }
   ) => request<DataDiffResult>(`${connBase(id)}/data-diff`, { method: "POST", body: JSON.stringify(body) }),
+  crossDiff: (body: {
+    sourceConnectionId: string;
+    sourceDatabase: string;
+    sourceTable: string;
+    targetConnectionId: string;
+    targetDatabase: string;
+    targetTable: string;
+    mode: "schema" | "data" | "both";
+  }) => request<CrossDiffResult>("/cross-diff", { method: "POST", body: JSON.stringify(body) }),
   schemaDiff: (
     id: string,
     source: { database: string; table: string },
@@ -513,6 +571,14 @@ export function databaseExportUrl(id: string, db: string, format: "sql" = "sql")
 
 export function serverExportUrl(id: string, format: "sql" = "sql"): string {
   return `${BASE}${connBase(id)}/export?format=${format}`;
+}
+
+export function backupDownloadUrl(fileId: string): string {
+  return `${BASE}/backups/files/${enc(fileId)}/download`;
+}
+
+export function connectionsExportUrl(passwords: boolean): string {
+  return `${BASE}/connections/export?passwords=${passwords ? "true" : "false"}`;
 }
 
 export function triggerDownload(url: string): void {

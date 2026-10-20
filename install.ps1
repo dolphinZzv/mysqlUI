@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 #
 # Options:
-#   $env:VERSION = "v0.1.0"          install a specific release (default: latest)
+#   $env:VERSION = "v1.0.0"          install a specific release (default: latest)
 #   $env:INSTALL_DIR = "C:\tools"    install directory
 #
 $ErrorActionPreference = "Stop"
