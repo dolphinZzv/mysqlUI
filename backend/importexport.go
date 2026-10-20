@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -244,6 +245,9 @@ func (s *Server) importSQL(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid upload: %w", err))
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("missing file field"))
@@ -252,41 +256,34 @@ func (s *Server) importSQL(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	ctx := r.Context()
-	executed := 0
-	var firstErr error
-
-	handler := func(stmt string) error {
-		if isQueryStatement(stmt) {
-			rows, err := db.QueryContext(ctx, stmt)
-			if err != nil {
-				return err
-			}
-			return rows.Close()
-		}
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-		executed++
-		return nil
-	}
-
-	if err := scanSQL(file, handler); err != nil {
-		firstErr = err
-	}
-
-	if firstErr != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("executed %d statement(s); %v", executed, firstErr))
+	// Restore scripts often rely on session state (USE, SET, temporary
+	// tables), so run every statement on one connection and stream the file.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"statements": executed})
+	defer conn.Close()
+
+	// Rows are not needed for a restore; use a zero budget so large SELECTs
+	// in a dump are drained without being materialised.
+	run := &scriptRun{conn: conn, rowBudget: 0}
+	if err := run.execReader(ctx, file); err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("executed %d statement(s); %v", run.executed, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"statements": run.executed})
 }
 
 // scanSQL reads SQL text and calls emit for each complete statement. It
 // understands quoted strings, backtick identifiers, comments and the client
-// side DELIMITER directive.
+// side DELIMITER directive. Statements that contain no SQL (blank lines or
+// comments only) are skipped, and the input is processed incrementally so only
+// the statement currently being parsed is held in memory.
 func scanSQL(r io.Reader, emit func(stmt string) error) error {
 	reader := bufio.NewReaderSize(r, 64*1024)
 	delim := ";"
+	delimBytes := []byte(delim)
 	var pending []byte
 	scanned := 0
 	atLineStart := true
@@ -303,9 +300,9 @@ func scanSQL(r io.Reader, emit func(stmt string) error) error {
 
 	flushPending := func(upto int) error {
 		stmt := strings.TrimSpace(string(pending[:upto]))
-		pending = append(pending[:0], pending[upto+len(delim):]...)
+		pending = append(pending[:0], pending[upto+len(delimBytes):]...)
 		scanned = 0
-		if stmt == "" {
+		if stmt == "" || !statementHasSQL(stmt) {
 			return nil
 		}
 		return emit(stmt)
@@ -315,12 +312,13 @@ func scanSQL(r io.Reader, emit func(stmt string) error) error {
 		line, readErr := reader.ReadString('\n')
 		if line != "" {
 			// DELIMITER directive (only at line start, outside a statement).
-			if atLineStart && state == stNormal && len(strings.TrimSpace(string(pending))) == 0 {
+			if atLineStart && state == stNormal && len(bytes.TrimSpace(pending)) == 0 {
 				trimmed := strings.TrimSpace(line)
 				if len(trimmed) >= 9 && strings.EqualFold(trimmed[:9], "DELIMITER") {
 					rest := strings.TrimSpace(trimmed[9:])
 					if rest != "" {
 						delim = rest
+						delimBytes = []byte(delim)
 					}
 					pending = pending[:0]
 					scanned = 0
@@ -361,7 +359,7 @@ func scanSQL(r io.Reader, emit func(stmt string) error) error {
 				case c == '/' && scanned+1 < len(pending) && pending[scanned+1] == '*':
 					state = stBlockComment
 					scanned += 2
-				case delim != "" && strings.HasPrefix(string(pending[scanned:]), delim):
+				case len(delimBytes) > 0 && bytes.HasPrefix(pending[scanned:], delimBytes):
 					if err := flushPending(scanned); err != nil {
 						return err
 					}
@@ -431,12 +429,48 @@ func scanSQL(r io.Reader, emit func(stmt string) error) error {
 		}
 	}
 
-	if tail := strings.TrimSpace(string(pending)); tail != "" {
+	if tail := strings.TrimSpace(string(pending)); tail != "" && statementHasSQL(tail) {
 		if err := emit(tail); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// statementHasSQL reports whether a statement contains anything other than
+// whitespace, semicolons and comments. It is used to ignore blank lines and
+// comment-only chunks (for example trailing notes in a SQL dump). Executable
+// version comments (/*! ... */) are treated as SQL, not as comments.
+func statementHasSQL(s string) bool {
+	for i := 0; i < len(s); {
+		switch c := s[i]; {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f' || c == ';':
+			i++
+		case c == '#':
+			i = skipLineComment(s, i)
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			i = skipLineComment(s, i)
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			if i+2 < len(s) && s[i+2] == '!' {
+				return true
+			}
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				return false
+			}
+			i += 2 + end + 2
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func skipLineComment(s string, i int) int {
+	if end := strings.IndexByte(s[i:], '\n'); end >= 0 {
+		return i + end + 1
+	}
+	return len(s)
 }
 
 // =========================================================================

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -20,6 +20,7 @@ import {
   Table2,
   Trash2,
   TrendingUp,
+  Upload,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
@@ -101,6 +102,7 @@ export function QueryTab({ tab, connections }: Props) {
   const [schema, setSchema] = useState<SqlSchema>({ tables: [] });
   const [sql, setSql] = useState("");
   const [result, setResult] = useState<QueryResult | null>(null);
+  const [activeResult, setActiveResult] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
@@ -108,6 +110,7 @@ export function QueryTab({ tab, connections }: Props) {
   const [builderOpen, setBuilderOpen] = useState(false);
   const [view, setView] = useState<"table" | "chart">("table");
   const [explainOpen, setExplainOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -166,9 +169,12 @@ export function QueryTab({ tab, connections }: Props) {
     try {
       const res = await api.runQuery(connectionId, database, text);
       setResult(res);
+      const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
+      setActiveResult(Math.max(0, count - 1));
       pushHistory(text);
     } catch (err) {
       setResult(null);
+      setActiveResult(0);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRunning(false);
@@ -176,16 +182,59 @@ export function QueryTab({ tab, connections }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sql, connectionId, database, t]);
 
+  const runFile = useCallback(
+    async (file: File) => {
+      if (!connectionId) {
+        toast.error(t("query.connection", "Connection") + " ?");
+        return;
+      }
+      setRunning(true);
+      setError(null);
+      try {
+        const res = await api.runSQLFile(connectionId, database, file);
+        setResult(res);
+        const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
+        setActiveResult(Math.max(0, count - 1));
+        toast.success(t("query.importSqlDone", "Executed {n} statement(s)", { n: res.statements ?? 0 }));
+      } catch (err) {
+        setResult(null);
+        setActiveResult(0);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRunning(false);
+      }
+    },
+    [connectionId, database, t],
+  );
+
+  const resultSets = useMemo(() => {
+    if (!result) return [];
+    return result.isQuery ? [...(result.results ?? []), result] : (result.results ?? []);
+  }, [result]);
+  const currentResult = resultSets[activeResult] ?? resultSets[resultSets.length - 1] ?? null;
+
   const copyResult = (kind: "insert" | "csv") => {
-    if (!result) return;
-    const text = kind === "insert" ? toINSERT(tab.database, result.columns, result.rows) : toCSV(result.columns, result.rows);
+    if (!currentResult) return;
+    const text =
+      kind === "insert"
+        ? toINSERT(database, currentResult.columns, currentResult.rows)
+        : toCSV(currentResult.columns, currentResult.rows);
     void navigator.clipboard.writeText(text).then(() => toast.success(t("structure.copied", "Copied")));
   };
 
   const exportResult = (kind: "csv" | "json") => {
-    if (!result) return;
-    if (kind === "csv") download("result.csv", toCSV(result.columns, result.rows), "text/csv");
-    else download("result.json", JSON.stringify(result.rows.map((r) => Object.fromEntries(result.columns.map((c, i) => [c, r[i]]))), null, 2), "application/json");
+    if (!currentResult) return;
+    if (kind === "csv") download("result.csv", toCSV(currentResult.columns, currentResult.rows), "text/csv");
+    else
+      download(
+        "result.json",
+        JSON.stringify(
+          currentResult.rows.map((r) => Object.fromEntries(currentResult.columns.map((c, i) => [c, r[i]]))),
+          null,
+          2,
+        ),
+        "application/json",
+      );
   };
 
   const toggleFavorite = () => {
@@ -198,9 +247,11 @@ export function QueryTab({ tab, connections }: Props) {
   };
 
   const rowRecords = useMemo(() => {
-    if (!result) return [];
-    return result.rows.map((row) => Object.fromEntries(result.columns.map((c, i) => [c, row[i]])));
-  }, [result]);
+    if (!currentResult) return [];
+    return currentResult.rows.map((row) =>
+      Object.fromEntries(currentResult.columns.map((c, i) => [c, row[i]])),
+    );
+  }, [currentResult]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -284,11 +335,31 @@ export function QueryTab({ tab, connections }: Props) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button size="sm" variant="outline" onClick={() => { setSql(""); setResult(null); setError(null); }}>
+          <Button size="sm" variant="outline" onClick={() => { setSql(""); setResult(null); setActiveResult(0); setError(null); }}>
             <Eraser /> {t("query.clear", "Clear")}
           </Button>
           <Button size="sm" variant="outline" onClick={() => setExplainOpen(true)} disabled={!sql.trim()}>
             <TrendingUp /> {t("explain.button", "Explain")}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".sql,.txt"
+            className="hidden"
+            onChange={(e) => {
+              const selected = e.target.files?.[0];
+              e.target.value = "";
+              if (selected) void runFile(selected);
+            }}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={running || !connectionId}
+            title={t("query.importSqlHint", "Execute a .sql file")}
+          >
+            <Upload /> {t("query.importSql", "Import SQL")}
           </Button>
           <Button size="sm" onClick={run} disabled={running || !connectionId}>
             {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
@@ -352,7 +423,7 @@ export function QueryTab({ tab, connections }: Props) {
           </span>
         )}
 
-        {result && result.isQuery && result.rowCount > 0 && (
+        {currentResult && currentResult.isQuery && currentResult.rowCount > 0 && (
           <div className="ml-auto flex items-center gap-1.5">
             <Button
               size="sm"
@@ -389,6 +460,25 @@ export function QueryTab({ tab, connections }: Props) {
         )}
       </div>
 
+      {resultSets.length > 1 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-3 py-1.5">
+          <span className="mr-1 shrink-0 text-xs text-muted-foreground">
+            {t("query.resultSets", "Results")}
+          </span>
+          {resultSets.map((rs, i) => (
+            <Button
+              key={i}
+              size="sm"
+              variant={i === activeResult ? "default" : "outline"}
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={() => setActiveResult(i)}
+            >
+              #{i + 1} · {formatNumber(rs.rowCount)}
+            </Button>
+          ))}
+        </div>
+      )}
+
       <div className="min-h-0 flex-1">
         {error ? (
           <div className="h-full overflow-auto p-4">
@@ -396,11 +486,15 @@ export function QueryTab({ tab, connections }: Props) {
               {error}
             </div>
           </div>
-        ) : result?.isQuery ? (
+        ) : currentResult?.isQuery ? (
           view === "chart" ? (
-            <ChartView rows={rowRecords} columns={result.columns} storageKey={`query:${connectionId}:${database}`} />
+            <ChartView
+              rows={rowRecords}
+              columns={currentResult.columns}
+              storageKey={`query:${connectionId}:${database}:${activeResult}`}
+            />
           ) : (
-            <ResultGrid columns={result.columns} rows={result.rows} />
+            <ResultGrid columns={currentResult.columns} rows={currentResult.rows} />
           )
         ) : result ? (
           <div className="flex h-full items-center justify-center">

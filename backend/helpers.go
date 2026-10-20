@@ -77,13 +77,21 @@ func normalizeValue(v any) any {
 	}
 }
 
-// scanRows materialises up to maxRows rows into JSON friendly values.
+// scanRows materialises up to maxRows rows into JSON friendly values. A
+// negative maxRows means "do not materialise any rows" and is used when the
+// response row budget has already been exhausted.
 func scanRows(rows *sql.Rows, maxRows int) (columns []string, data [][]any, truncated bool, err error) {
 	columns, err = rows.Columns()
 	if err != nil {
 		return nil, nil, false, err
 	}
 	data = make([][]any, 0)
+	if maxRows < 0 {
+		// Consume at most one row to report whether there was anything to
+		// truncate; callers close the rows immediately afterwards.
+		truncated = rows.Next()
+		return columns, data, truncated, rows.Err()
+	}
 	for rows.Next() {
 		if maxRows > 0 && len(data) >= maxRows {
 			truncated = true

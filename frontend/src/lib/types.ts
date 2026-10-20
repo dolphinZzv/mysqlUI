@@ -113,6 +113,9 @@ export interface QueryResult {
   message: string;
   truncated: boolean;
   isQuery: boolean;
+  statements?: number;
+  /** Result sets produced by earlier statements; the last statement is top-level. */
+  results?: QueryResult[];
 }
 
 export interface ConnectionTestResult {

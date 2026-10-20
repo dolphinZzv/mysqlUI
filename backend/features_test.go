@@ -177,6 +177,74 @@ func TestScanSQL(t *testing.T) {
 	}
 }
 
+func TestScanSQLIgnoresCommentsAndBlankLines(t *testing.T) {
+	collect := func(in string) []string {
+		var out []string
+		if err := scanSQL(strings.NewReader(in), func(stmt string) error {
+			out = append(out, stmt)
+			return nil
+		}); err != nil {
+			t.Fatalf("scanSQL(%q) error: %v", in, err)
+		}
+		return out
+	}
+
+	input := `
+-- leading comment
+
+# another comment
+SELECT 1;
+
+/* block
+   comment */
+SELECT 2
+;
+-- trailing comment only
+`
+	got := collect(input)
+	if len(got) != 2 {
+		t.Fatalf("comments/blank lines split = %#v", got)
+	}
+	if !strings.Contains(got[0], "SELECT 1") || !strings.Contains(got[1], "SELECT 2") {
+		t.Errorf("statements lost content: %#v", got)
+	}
+
+	for _, in := range []string{"", "  \n\t\n", "-- only\n# comments\n/* here */", ";;;\n-- x\n;"} {
+		if got := collect(in); len(got) != 0 {
+			t.Errorf("scanSQL(%q) = %#v, want no statements", in, got)
+		}
+	}
+
+	// Executable version comments are SQL, not ignored.
+	if got := collect("/*!40101 SET NAMES utf8 */;"); len(got) != 1 {
+		t.Errorf("version comment = %#v, want one statement", got)
+	}
+
+	// A semicolon inside a comment must not split the statement.
+	if got := collect("SELECT 1 /* ; */; SELECT 2;"); len(got) != 2 {
+		t.Errorf("comment separator = %#v", got)
+	}
+}
+
+func TestStatementHasSQL(t *testing.T) {
+	cases := map[string]bool{
+		"":                           false,
+		"  \n\t;":                    false,
+		"-- comment":                 false,
+		"# comment\n":                false,
+		"/* block */":                false,
+		"/* block */ ; -- tail":      false,
+		"SELECT 1":                   true,
+		"-- lead\nSELECT 1":          true,
+		"/*!40101 SET NAMES utf8 */": true,
+	}
+	for in, want := range cases {
+		if got := statementHasSQL(in); got != want {
+			t.Errorf("statementHasSQL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestParseBoolAndPlaceholders(t *testing.T) {
 	if !parseBool("true", false) || parseBool("false", true) || !parseBool("", true) {
 		t.Error("parseBool behaved unexpectedly")

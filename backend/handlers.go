@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +56,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-delete", s.deleteRows)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
+	mux.HandleFunc("POST /api/connections/{id}/query/file", s.runQueryFile)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/query/file", s.runQueryFile)
 
 	// server monitor
 	mux.HandleFunc("GET /api/connections/{id}/monitor/processlist", s.monitorProcessList)
@@ -965,9 +968,21 @@ type queryResult struct {
 	Message    string   `json:"message"`
 	Truncated  bool     `json:"truncated"`
 	IsQuery    bool     `json:"isQuery"`
+	Statements int      `json:"statements,omitempty"`
+	// Results holds the result sets of earlier query statements. The final
+	// statement's result is exposed in the top-level fields so single
+	// statement responses stay unchanged and rows are not serialised twice.
+	Results []queryResult `json:"results,omitempty"`
 }
 
-const maxQueryRows = 5000
+const (
+	// maxQueryRows bounds the total number of rows materialised for one query
+	// request, across all statements. Keeping this global avoids a script with
+	// many SELECTs exhausting server or browser memory.
+	maxQueryRows = 5000
+	// maxQueryResultSets bounds how many earlier result sets are retained.
+	maxQueryResultSets = 20
+)
 
 func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 	entry, ok := s.entry(w, r)
@@ -979,61 +994,274 @@ func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	sqlText := strings.TrimSpace(in.SQL)
-	if sqlText == "" {
+	if strings.TrimSpace(in.SQL) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("sql is required"))
 		return
 	}
-	if s.isReadOnly(r) && !isQueryStatement(sqlText) {
-		writeErr(w, http.StatusForbidden, errReadOnly)
+
+	// Split the script into statements while ignoring blank lines, comments
+	// and DELIMITER directives. Validate every statement up front for
+	// read-only connections so a write cannot slip through after a SELECT.
+	readOnly := s.isReadOnly(r)
+	statementCount, err := validateScript(strings.NewReader(in.SQL), readOnly)
+	if err != nil {
+		if errors.Is(err, errReadOnly) {
+			writeErr(w, http.StatusForbidden, errReadOnly)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	if statementCount == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("sql is required"))
+		return
+	}
+
 	db, ok := s.db(w, r, entry, in.Database)
 	if !ok {
 		return
 	}
+	ctx := r.Context()
+	// Pin all statements to one connection so session state (USE, temporary
+	// tables, user variables, transactions) behaves like a SQL console.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
+		return
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	run := &scriptRun{
+		conn:      conn,
+		readOnly:  readOnly,
+		rowBudget: maxQueryRows,
+	}
+	if err := run.execReader(ctx, strings.NewReader(in.SQL)); err != nil {
+		if errors.Is(err, errReadOnly) {
+			writeErr(w, http.StatusForbidden, errReadOnly)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("executed %d statement(s); %w", run.executed, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, run.result(start))
+}
+
+// runQueryFile executes a .sql upload with the same semantics as runQuery.
+// The file is streamed through scanSQL, so large dumps do not have to be held
+// in memory as a single string.
+func (s *Server) runQueryFile(w http.ResponseWriter, r *http.Request) {
+	entry, ok := s.entry(w, r)
+	if !ok {
+		return
+	}
+	database := r.PathValue("db")
+	db, ok := s.db(w, r, entry, database)
+	if !ok {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid upload: %w", err))
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("missing file field"))
+		return
+	}
+	defer file.Close()
+
+	readOnly := s.isReadOnly(r)
+	if readOnly {
+		// Validate the whole script before executing anything, then rewind
+		// and stream it again. multipart.File is seekable.
+		if _, err := validateScript(file, true); err != nil {
+			if errors.Is(err, errReadOnly) {
+				writeErr(w, http.StatusForbidden, errReadOnly)
+				return
+			}
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+	}
 
 	ctx := r.Context()
-	start := time.Now()
-	result := queryResult{Columns: []string{}, Rows: [][]any{}}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("connection failed: %w", err))
+		return
+	}
+	defer conn.Close()
 
-	if isQueryStatement(sqlText) {
-		rows, err := db.QueryContext(ctx, sqlText)
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
+	start := time.Now()
+	run := &scriptRun{
+		conn:      conn,
+		readOnly:  readOnly,
+		rowBudget: maxQueryRows,
+	}
+	if err := run.execReader(ctx, file); err != nil {
+		if errors.Is(err, errReadOnly) {
+			writeErr(w, http.StatusForbidden, errReadOnly)
 			return
+		}
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("executed %d statement(s); %w", run.executed, err))
+		return
+	}
+	if run.executed == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("sql is required"))
+		return
+	}
+	writeJSON(w, http.StatusOK, run.result(start))
+}
+
+// validateScript scans a script without executing it and optionally rejects
+// non-query statements for read-only connections.
+func validateScript(r io.Reader, readOnly bool) (int, error) {
+	count := 0
+	err := scanSQL(r, func(stmt string) error {
+		count++
+		if readOnly && !isQueryStatement(stmt) {
+			return errReadOnly
+		}
+		return nil
+	})
+	return count, err
+}
+
+// scriptRun accumulates the outcome of executing a multi-statement script.
+type scriptRun struct {
+	conn      *sql.Conn
+	readOnly  bool
+	rowBudget int
+
+	executed      int
+	totalAffected int64
+	lastInsert    int64
+	totalReturned int
+	anyTruncated  bool
+	earlier       []queryResult
+	last          queryResult
+}
+
+func (run *scriptRun) execReader(ctx context.Context, r io.Reader) error {
+	return scanSQL(r, func(stmt string) error {
+		if run.readOnly && !isQueryStatement(stmt) {
+			return errReadOnly
+		}
+		res, err := execSQLStatement(ctx, run.conn, stmt, run.rowBudget)
+		if err != nil {
+			return fmt.Errorf("statement %d: %w", run.executed+1, err)
+		}
+		run.executed++
+		run.totalAffected += res.Affected
+		if res.LastInsert > 0 {
+			run.lastInsert = res.LastInsert
+		}
+		if res.IsQuery {
+			run.totalReturned += res.RowCount
+			run.rowBudget -= res.RowCount
+			if run.rowBudget < 0 {
+				run.rowBudget = 0
+			}
+			run.anyTruncated = run.anyTruncated || res.Truncated
+			// Keep only the most recent result sets; older ones are dropped
+			// so a long script cannot grow the response without bound.
+			if maxQueryResultSets > 0 {
+				if len(run.earlier) >= maxQueryResultSets {
+					copy(run.earlier, run.earlier[1:])
+					run.earlier[len(run.earlier)-1] = res
+					run.anyTruncated = true
+				} else {
+					run.earlier = append(run.earlier, res)
+				}
+			}
+		}
+		run.last = res
+		return nil
+	})
+}
+
+func (run *scriptRun) result(start time.Time) queryResult {
+	// The last statement's result is in the top-level fields, so remove it
+	// from the earlier-result list to avoid sending its rows twice.
+	results := run.earlier
+	if run.last.IsQuery && len(results) > 0 {
+		results = results[:len(results)-1]
+	}
+
+	last := run.last
+	last.DurationMs = time.Since(start).Milliseconds()
+	last.Statements = run.executed
+	last.Affected = run.totalAffected
+	last.LastInsert = run.lastInsert
+	last.Truncated = run.anyTruncated || last.Truncated
+	if len(results) > 0 {
+		last.Results = results
+	}
+	if run.executed > 1 {
+		last.Message = fmt.Sprintf("%d statement(s) executed", run.executed)
+		if run.totalAffected > 0 {
+			last.Message += fmt.Sprintf(" · %d row(s) affected", run.totalAffected)
+		}
+		if run.totalReturned > 0 {
+			last.Message += fmt.Sprintf(" · %d row(s) returned", run.totalReturned)
+		}
+	}
+	return last
+}
+
+// execSQLStatement runs one statement. rowBudget is the number of rows that
+// may still be materialised for this request; once it is exhausted the query
+// is still executed but its rows are discarded.
+func execSQLStatement(ctx context.Context, conn *sql.Conn, stmt string, rowBudget int) (queryResult, error) {
+	res := queryResult{Columns: []string{}, Rows: [][]any{}}
+	start := time.Now()
+
+	if isQueryStatement(stmt) {
+		rows, err := conn.QueryContext(ctx, stmt)
+		if err != nil {
+			return res, err
 		}
 		defer rows.Close()
-		columns, data, truncated, err := scanRows(rows, maxQueryRows)
+		limit := rowBudget
+		if limit <= 0 {
+			limit = -1
+		}
+		columns, data, truncated, err := scanRows(rows, limit)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
+			return res, err
 		}
-		result.IsQuery = true
-		result.Columns = columns
-		result.Rows = data
-		result.RowCount = len(data)
-		result.Truncated = truncated
-		result.DurationMs = time.Since(start).Milliseconds()
-		if result.Message == "" {
-			result.Message = fmt.Sprintf("%d row(s) returned", len(data))
-		}
-		writeJSON(w, http.StatusOK, result)
-		return
+		res.IsQuery = true
+		res.Columns = columns
+		res.Rows = data
+		res.RowCount = len(data)
+		res.Truncated = truncated
+		res.DurationMs = time.Since(start).Milliseconds()
+		res.Message = fmt.Sprintf("%d row(s) returned", len(data))
+		return res, nil
 	}
 
-	res, err := db.ExecContext(ctx, sqlText)
+	execRes, err := conn.ExecContext(ctx, stmt)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
+		return res, err
 	}
-	affected, _ := res.RowsAffected()
-	lastID, _ := res.LastInsertId()
-	result.Affected = affected
-	result.LastInsert = lastID
-	result.DurationMs = time.Since(start).Milliseconds()
-	result.Message = fmt.Sprintf("%d row(s) affected", affected)
-	writeJSON(w, http.StatusOK, result)
+	affected, _ := execRes.RowsAffected()
+	lastID, _ := execRes.LastInsertId()
+	res.Affected = affected
+	res.LastInsert = lastID
+	res.DurationMs = time.Since(start).Milliseconds()
+	res.Message = fmt.Sprintf("%d row(s) affected", affected)
+	return res, nil
 }
 
 func parseIntDefault(s string, def int) int {

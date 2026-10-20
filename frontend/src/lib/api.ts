@@ -231,6 +231,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ database, sql }),
     }),
+  runSQLFile: (id: string, database: string | null, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const path = database ? `${dbBase(id, database)}/query/file` : `${connBase(id)}/query/file`;
+    return upload<QueryResult>(path, form);
+  },
   executeDDL: (id: string, db: string, sql: string) =>
     request<{ columns?: string[]; rows?: unknown[][]; affected?: number }>(`${dbBase(id, db)}/ddl`, {
       method: "POST",

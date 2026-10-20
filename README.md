@@ -37,7 +37,11 @@ shipped as a **single binary** with the UI embedded.
 - **Copy / migrate a table** — duplicate a table's structure and data into the same
   or another database on the same server, optionally dropping the target first.
 - **SQL editor** — query console with line numbers, query history, `Ctrl/⌘+Enter`
-  to run, and a result grid.
+  to run, and a result grid. Scripts can contain multiple statements; blank lines
+  and comments are ignored, and each statement runs on the same connection so
+  session state (`USE`, temporary tables, variables) carries across. Multiple
+  result sets are capped in memory and selectable in the UI. A `.sql` file can
+  also be imported and executed directly from the editor toolbar.
 - **Export** — download a table as CSV / JSON / SQL, or an entire database as SQL.
 - **Import / restore** — load CSV into a table (with header mapping, truncate,
   delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
@@ -363,6 +367,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET` | `…/tables/{table}/export?format=csv\|json\|sql` | export table |
 | `GET` | `…/databases/{db}/export?format=sql` | export database |
 | `POST` | `/api/connections/{id}/query` | run arbitrary SQL |
+| `POST` | `/api/connections/{id}/query/file` | execute an uploaded `.sql` script |
 | `GET/POST` | `/api/connections/{id}/schema-versions` | list / seal schema snapshots |
 | `GET/DELETE` | `/api/connections/{id}/schema-versions/{versionId}` | get / delete a snapshot |
 | `POST` | `/api/connections/{id}/schema-versions/diff` | diff two versions or a version vs live |
