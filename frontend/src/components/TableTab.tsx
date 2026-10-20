@@ -3,7 +3,9 @@ import { toast } from "sonner";
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardPaste,
   Database as DatabaseIcon,
+  GitCompare,
   Layers,
   Loader2,
   Plus,
@@ -42,6 +44,8 @@ import { AddRowDialog } from "@/components/AddRowDialog";
 import { FilterBar } from "@/components/FilterBar";
 import { ExportMenu } from "@/components/ExportMenu";
 import { CellViewer } from "@/components/CellViewer";
+import { PasteRowsDialog } from "@/components/PasteRowsDialog";
+import { DataDiffDialog } from "@/components/DataDiffDialog";
 
 interface Props {
   tab: TableTabDef;
@@ -63,6 +67,9 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [duplicateRow, setDuplicateRow] = useState<number | null>(null);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -233,7 +240,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const handleInsert = async (values: Record<string, unknown>) => {
     try {
       await api.insertRow(tab.connectionId, tab.database, tab.table, values);
-      toast.success("Row inserted");
+      toast.success(duplicateRow !== null ? "Row duplicated" : "Row inserted");
+      setDuplicateRow(null);
       void loadData(page, pageSize);
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
@@ -242,6 +250,16 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
 
   const columnsMeta = structure?.columns ?? [];
   const filterColumns = columnsMeta.length ? columnsMeta.map((c) => c.name) : data?.columns ?? [];
+  const duplicateValues = (() => {
+    if (duplicateRow === null || !data) return undefined;
+    const values: Record<string, unknown> = {};
+    for (const col of columnsMeta) {
+      if (/auto_increment|default_generated/i.test(col.extra)) continue;
+      const idx = data.columns.indexOf(col.name);
+      if (idx >= 0) values[col.name] = data.rows[duplicateRow][idx];
+    }
+    return values;
+  })();
 
   const refreshAll = () => {
     void loadStructure();
@@ -277,8 +295,14 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
 
       {view === "data" && (
         <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-3 py-1.5 text-xs">
-          <Button size="sm" variant="outline" disabled={!structure} onClick={() => setAddOpen(true)}>
+          <Button size="sm" variant="outline" disabled={!structure} onClick={() => { setDuplicateRow(null); setAddOpen(true); }}>
             <Plus /> Insert row
+          </Button>
+          <Button size="sm" variant="outline" disabled={!structure || !data} onClick={() => setPasteOpen(true)}>
+            <ClipboardPaste /> Paste rows
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setDiffOpen(true)}>
+            <GitCompare /> Compare
           </Button>
           <Button size="sm" variant="outline" onClick={() => void loadData(page, pageSize)} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
@@ -359,10 +383,12 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             columnsMeta={columnsMeta}
             primaryKey={data.primaryKey}
             foreignKeys={structure?.foreignKeys ?? []}
+            tableName={tab.table}
             orderBy={orderBy}
             onSort={toggleSort}
             onUpdateCell={handleUpdateCell}
             onDeleteRow={(r) => setDeleteTarget(r)}
+            onDuplicateRow={(r) => { setDuplicateRow(r); setAddOpen(true); }}
             onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
             onJump={(fk, value) => onOpenRef?.(fk, value)}
             selected={selected}
@@ -397,7 +423,33 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         )}
       </div>
 
-      <AddRowDialog open={addOpen} onOpenChange={setAddOpen} columns={columnsMeta} onSubmit={handleInsert} />
+      <AddRowDialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setDuplicateRow(null);
+        }}
+        columns={columnsMeta}
+        initialValues={duplicateValues}
+        onSubmit={handleInsert}
+      />
+      <DataDiffDialog
+        open={diffOpen}
+        onOpenChange={setDiffOpen}
+        connectionId={tab.connectionId}
+        database={tab.database}
+        table={tab.table}
+      />
+      <PasteRowsDialog
+        open={pasteOpen}
+        onOpenChange={setPasteOpen}
+        columns={data?.columns ?? []}
+        onSubmit={async (columns, rows) => {
+          const res = await api.bulkInsertRows(tab.connectionId, tab.database, tab.table, columns, rows as unknown[][]);
+          toast.success(`Inserted ${res.affected} row(s)`);
+          await loadData(page, pageSize);
+        }}
+      />
 
       {cellViewer && (
         <CellViewer

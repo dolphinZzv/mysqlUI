@@ -21,6 +21,7 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   columns: ColumnInfo[];
+  initialValues?: Record<string, unknown>;
   onSubmit: (data: Record<string, unknown>) => Promise<void>;
 }
 
@@ -35,7 +36,7 @@ const isLong = (c: ColumnInfo) => /text|blob|json/i.test(c.type);
 
 const isNumber = (c: ColumnInfo) => /^(tiny|small|medium|big)?int|decimal|float|double|numeric|year/i.test(c.type);
 
-export function AddRowDialog({ open, onOpenChange, columns, onSubmit }: Props) {
+export function AddRowDialog({ open, onOpenChange, columns, initialValues, onSubmit }: Props) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [nulls, setNulls] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -43,12 +44,18 @@ export function AddRowDialog({ open, onOpenChange, columns, onSubmit }: Props) {
 
   useEffect(() => {
     if (open) {
-      setValues({});
-      setNulls(new Set());
+      const nextValues: Record<string, string> = {};
+      const nextNulls = new Set<string>();
+      for (const [key, value] of Object.entries(initialValues ?? {})) {
+        if (value === null || value === undefined) nextNulls.add(key);
+        else nextValues[key] = String(value);
+      }
+      setValues(nextValues);
+      setNulls(nextNulls);
       setError(null);
       setSaving(false);
     }
-  }, [open]);
+  }, [open, initialValues]);
 
   const entries = useMemo(() => columns, [columns]);
 

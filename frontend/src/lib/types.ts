@@ -95,6 +95,8 @@ export interface TableStructure {
   foreignKeys: ForeignKeyInfo[];
   createSql: string;
   viewDefinition?: string;
+  charset?: string;
+  collation?: string;
 }
 
 export interface TableData {
@@ -116,6 +118,7 @@ export interface QueryResult {
   message: string;
   truncated: boolean;
   isQuery: boolean;
+  hasMore?: boolean;
   statements?: number;
   /** Result sets produced by earlier statements; the last statement is top-level. */
   results?: QueryResult[];
@@ -410,4 +413,27 @@ export interface SlowQueryInfo {
   logFile: string;
   rows: Record<string, unknown>[];
   error?: string;
+}
+
+export interface DataDiffResult {
+  source: string;
+  target: string;
+  keyColumns: string[];
+  sourceRows: number;
+  targetRows: number;
+  onlyInSource: number;
+  onlyInTarget: number;
+  changed: number;
+  truncated: boolean;
+  sql: string;
+}
+
+export interface BackupStatus {
+  enabled: boolean;
+  intervalHours: number;
+  retentionDays: number;
+  directory: string;
+  lastRun?: string;
+  lastError?: string;
+  running: boolean;
 }

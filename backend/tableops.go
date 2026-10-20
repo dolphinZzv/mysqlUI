@@ -188,6 +188,13 @@ func (s *Server) exportTable(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Content-Disposition", contentDisposition(table+".json"))
 		_ = streamRowsJSON(w, columns, rows)
+	case "xlsx":
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", contentDisposition(table+".xlsx"))
+		if err := streamRowsXLSX(w, columns, rows); err != nil {
+			// Headers are already committed; the client will see a truncated file.
+			return
+		}
 	case "sql":
 		w.Header().Set("Content-Type", "application/sql; charset=utf-8")
 		w.Header().Set("Content-Disposition", contentDisposition(table+".sql"))

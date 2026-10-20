@@ -47,11 +47,20 @@ shipped as a **single binary** with the UI embedded.
 - **Import / restore** — load CSV into a table (with header mapping, truncate,
   delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
   understands comments, quotes and `DELIMITER` for routines).
+- **Data tools** — paste rows from Excel/Sheets, duplicate rows, copy rows as
+  INSERT/UPDATE, compare table data across databases, and import JSON/Excel.
+- **Table maintenance** — truncate, optimize, analyze, check, repair and edit
+  table options (engine, charset, collation, comment).
+- **SQL snippets** — save reusable SQL fragments in a right-hand panel and
+  insert them at the editor cursor.
+- **Scheduled backups** — periodic `.sql` dumps to a configurable directory with
+  retention cleanup.
 - **Database objects** — create/drop databases, create and edit views, and
   create/modify procedures, functions, triggers and events. A foreign-key
   designer is available from the table structure view.
 - **Query control** — cancel a running query, choose an optional timeout, and
-  use Begin/Commit/Rollback across requests via persistent query sessions.
+  use Begin/Commit/Rollback across requests via persistent query sessions,
+  run selected SQL, format SQL and load more result pages.
 - **Replication & slow queries** — inspect primary/replica status and the top
   statement digests from `performance_schema`, alongside the existing monitor.
 - **Self-update** — `mysqlui update` downloads and verifies the latest release and

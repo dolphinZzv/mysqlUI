@@ -6,6 +6,8 @@ import {
   Database,
   Key,
   KeyRound,
+  Settings2,
+  Wrench,
   Layers,
   Link2,
   ListTree,
@@ -34,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
@@ -60,6 +63,7 @@ type Pending =
   | { kind: "column"; name: string }
   | { kind: "index"; name: string }
   | { kind: "foreignKey"; name: string }
+  | { kind: "truncate" }
   | { kind: "table" }
   | null;
 
@@ -108,6 +112,8 @@ export function StructureView({
   const [newName, setNewName] = useState(table);
   const [viewOpen, setViewOpen] = useState(false);
   const [fkOpen, setFkOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [options, setOptions] = useState({ engine: "", charset: "", collation: "", comment: "" });
 
   const indexes = useMemo(() => {
     const map = new Map<string, { name: string; unique: boolean; type: string; columns: string[]; cardinality: number | null }>();
@@ -185,6 +191,8 @@ export function StructureView({
       await run(() => api.dropIndex(connectionId, database, table, pending.name), `Dropped index "${pending.name}"`);
     } else if (pending.kind === "foreignKey") {
       await run(() => api.dropForeignKey(connectionId, database, table, pending.name), `Dropped foreign key "${pending.name}"`);
+    } else if (pending.kind === "truncate") {
+      await run(() => api.tableMaintenance(connectionId, database, table, "TRUNCATE"), "Table truncated");
     } else if (pending.kind === "table") {
       setBusy(true);
       try {
@@ -259,6 +267,44 @@ export function StructureView({
     }
   };
 
+  const runMaintenance = async (operation: string) => {
+    setBusy(true);
+    try {
+      await api.tableMaintenance(connectionId, database, table, operation);
+      toast.success(`${operation} completed`);
+      onRefresh();
+    } catch (err) {
+      toast.error(`${operation} failed`, { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+      setPending(null);
+    }
+  };
+
+  const openOptions = () => {
+    setOptions({
+      engine: structure.engine || "",
+      charset: structure.charset || "",
+      collation: structure.collation || "",
+      comment: structure.comment || "",
+    });
+    setOptionsOpen(true);
+  };
+
+  const saveOptions = async () => {
+    setBusy(true);
+    try {
+      await api.updateTableOptions(connectionId, database, table, options);
+      toast.success("Table options updated");
+      setOptionsOpen(false);
+      onRefresh();
+    } catch (err) {
+      toast.error("Failed to update table options", { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const existingNames = structure.columns.map((c) => c.name);
 
   return (
@@ -292,6 +338,30 @@ export function StructureView({
               <Button size="sm" variant="outline" onClick={() => { setIndexDialog({ name: "", unique: false, columns: [], columnsText: "" }); setIndexOpen(true); }}>
                 <Plus /> Index
               </Button>
+            </>
+          )}
+          {structure.type !== "VIEW" && (
+            <>
+              <Button size="sm" variant="outline" onClick={openOptions}>
+                <Settings2 /> Options
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline" disabled={busy}>
+                    <Wrench /> Maintenance
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setPending({ kind: "truncate" })}>
+                    <Trash2 /> Truncate
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => void runMaintenance("OPTIMIZE")}>Optimize</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void runMaintenance("ANALYZE")}>Analyze</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void runMaintenance("CHECK")}>Check</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => void runMaintenance("REPAIR")}>Repair</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
           <Button size="sm" variant="outline" onClick={() => { setNewName(table); setRenameOpen(true); }}>
@@ -512,6 +582,41 @@ export function StructureView({
         </pre>
       </section>
 
+      <Dialog open={optionsOpen} onOpenChange={setOptionsOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Table options</DialogTitle>
+            <DialogDescription>Change storage engine, character set, collation and comment.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Engine</Label>
+              <Input className="h-8 font-mono" value={options.engine} onChange={(e) => setOptions((o) => ({ ...o, engine: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label className="text-xs">Character set</Label>
+                <Input className="h-8 font-mono" value={options.charset} onChange={(e) => setOptions((o) => ({ ...o, charset: e.target.value }))} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-xs">Collation</Label>
+                <Input className="h-8 font-mono" value={options.collation} onChange={(e) => setOptions((o) => ({ ...o, collation: e.target.value }))} />
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Comment</Label>
+              <Input className="h-8" value={options.comment} onChange={(e) => setOptions((o) => ({ ...o, comment: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOptionsOpen(false)} disabled={busy}>Cancel</Button>
+            <Button onClick={() => void saveOptions()} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : <Check />} Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ColumnDialog
         open={columnDialog.open}
         onOpenChange={(o) => setColumnDialog((s) => ({ ...s, open: o }))}
@@ -620,12 +725,16 @@ export function StructureView({
                     ? `Drop index "${pending.name}"?`
                     : pending?.kind === "foreignKey"
                       ? `Drop foreign key "${pending.name}"?`
-                      : ""}
+                      : pending?.kind === "truncate"
+                        ? `Truncate table "${table}"?`
+                        : ""}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pending?.kind === "table"
                 ? "This permanently deletes the table and all of its data."
-                : "This action cannot be undone."}
+                : pending?.kind === "truncate"
+                  ? "This permanently removes all rows from the table."
+                  : "This action cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

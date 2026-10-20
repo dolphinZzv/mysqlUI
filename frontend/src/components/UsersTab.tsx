@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { KeyRound, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, UserPlus, Users } from "lucide-react";
+import { CopyPlus, KeyRound, Loader2, Lock, Plus, RefreshCw, ShieldCheck, Trash2, Unlock, UserPlus, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import type { UserInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -47,6 +47,9 @@ export function UsersTab({ connectionId }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
   const [grantOpen, setGrantOpen] = useState(false);
   const [dropTarget, setDropTarget] = useState<UserInfo | null>(null);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyTarget, setCopyTarget] = useState({ user: "", host: "%" });
+  const [lockBusy, setLockBusy] = useState<string | null>(null);
 
   const [newUser, setNewUser] = useState({ user: "", host: "%", password: "" });
   const [grantForm, setGrantForm] = useState({
@@ -119,6 +122,36 @@ export function UsersTab({ connectionId }: Props) {
     }
   };
 
+  const toggleLock = async (u: UserInfo) => {
+    const locked = String(u.accountLocked).toUpperCase() === "Y";
+    setLockBusy(`${u.user}@${u.host}`);
+    try {
+      await api.setUserLock(connectionId, u.host, u.user, !locked);
+      toast.success(locked ? "User unlocked" : "User locked");
+      void load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLockBusy(null);
+    }
+  };
+
+  const submitCopy = async () => {
+    if (!selected) return;
+    if (!copyTarget.user.trim()) {
+      toast.error(t("users.user", "User") + " ?");
+      return;
+    }
+    try {
+      const res = await api.copyGrants(connectionId, selected.host, selected.user, copyTarget.user, copyTarget.host || "%");
+      toast.success(`Copied ${res.grants} grant(s)`);
+      setCopyOpen(false);
+      setCopyTarget({ user: "", host: "%" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const confirmDrop = async () => {
     if (!dropTarget) return;
     try {
@@ -178,6 +211,18 @@ export function UsersTab({ connectionId }: Props) {
                     <Button
                       size="icon-sm"
                       variant="ghost"
+                      title={String(u.accountLocked).toUpperCase() === "Y" ? "Unlock user" : "Lock user"}
+                      disabled={lockBusy === `${u.user}@${u.host}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void toggleLock(u);
+                      }}
+                    >
+                      {lockBusy === `${u.user}@${u.host}` ? <Loader2 className="animate-spin" /> : String(u.accountLocked).toUpperCase() === "Y" ? <Unlock /> : <Lock />}
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
                       className="hover:text-destructive"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -203,7 +248,10 @@ export function UsersTab({ connectionId }: Props) {
               {selected.user}@{selected.host}
             </Badge>
           )}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={!selected} onClick={() => setCopyOpen(true)}>
+              <CopyPlus /> Copy grants
+            </Button>
             <Button size="sm" variant="outline" disabled={!selected} onClick={() => setGrantOpen(true)}>
               <Plus /> {t("users.grant", "Grant")}
             </Button>
@@ -348,6 +396,31 @@ export function UsersTab({ connectionId }: Props) {
             <Button onClick={submitGrant}>
               <ShieldCheck /> {t("users.grant", "Grant")}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={copyOpen} onOpenChange={setCopyOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Copy grants</DialogTitle>
+            <DialogDescription>
+              Copy privileges from {selected?.user}@{selected?.host} to another account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Target user</Label>
+              <Input className="h-8 font-mono" value={copyTarget.user} onChange={(e) => setCopyTarget((s) => ({ ...s, user: e.target.value }))} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Target host</Label>
+              <Input className="h-8 font-mono" value={copyTarget.host} onChange={(e) => setCopyTarget((s) => ({ ...s, host: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCopyOpen(false)}>Cancel</Button>
+            <Button onClick={() => void submitCopy()}><CopyPlus /> Copy</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

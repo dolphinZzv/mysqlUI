@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -163,4 +164,49 @@ func timerMillis(v any) (float64, bool) {
 	}
 	// performance_schema timers are picoseconds.
 	return n / 1e9, true
+}
+
+func (s *Server) setMonitorVariable(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
+	_, db, ok := s.connDB(w, r)
+	if !ok {
+		return
+	}
+	name := strings.TrimSpace(r.PathValue("name"))
+	if !validIdent(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid variable name %q", name))
+		return
+	}
+	var in struct {
+		Scope string `json:"scope"`
+		Value string `json:"value"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	scope := strings.ToUpper(strings.TrimSpace(in.Scope))
+	if scope != "GLOBAL" && scope != "SESSION" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid scope %q", in.Scope))
+		return
+	}
+	value := strings.TrimSpace(in.Value)
+	upper := strings.ToUpper(value)
+	raw := upper == "ON" || upper == "OFF" || upper == "TRUE" || upper == "FALSE" || upper == "DEFAULT"
+	if !raw {
+		if _, err := strconv.ParseFloat(value, 64); err == nil {
+			raw = true
+		}
+	}
+	literal := value
+	if !raw {
+		literal = quoteSQLString(value)
+	}
+	if _, err := db.ExecContext(r.Context(), "SET "+scope+" "+name+" = "+literal); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "scope": scope, "name": name, "value": value})
 }

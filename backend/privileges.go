@@ -292,3 +292,83 @@ func (s *Server) revokePrivileges(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+func (s *Server) lockUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
+	_, db, ok := s.connDB(w, r)
+	if !ok {
+		return
+	}
+	spec, err := userSpec(r.PathValue("user"), r.PathValue("host"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var in struct {
+		Locked bool `json:"locked"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	action := "UNLOCK"
+	if in.Locked {
+		action = "LOCK"
+	}
+	if _, err := db.ExecContext(r.Context(), "ALTER USER "+spec+" ACCOUNT "+action); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "locked": in.Locked})
+}
+
+func (s *Server) copyGrants(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWrite(w, r) {
+		return
+	}
+	_, db, ok := s.connDB(w, r)
+	if !ok {
+		return
+	}
+	source, err := userSpec(r.PathValue("user"), r.PathValue("host"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var in struct {
+		TargetUser string `json:"targetUser"`
+		TargetHost string `json:"targetHost"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	target, err := userSpec(in.TargetUser, in.TargetHost)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	rows, err := db.QueryContext(r.Context(), "SHOW GRANTS FOR "+source)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	var grants []string
+	for rows.Next() {
+		var g string
+		if rows.Scan(&g) == nil {
+			grants = append(grants, g)
+		}
+	}
+	rows.Close()
+	for _, grant := range grants {
+		q := strings.ReplaceAll(grant, source, target)
+		if _, err := db.ExecContext(r.Context(), q); err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("copying %q: %w", grant, err))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "grants": len(grants)})
+}

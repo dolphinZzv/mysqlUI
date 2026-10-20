@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Activity, Gauge, GitBranch, Loader2, RefreshCw, Search, Skull, Timer, X } from "lucide-react";
+import { Activity, Gauge, GitBranch, Loader2, Pencil, RefreshCw, Search, Skull, Timer, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { MonitorOverview, NameValue, ProcessInfo, ReplicationStatus, SlowQueryInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -8,6 +8,9 @@ import { formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   AlertDialog,
@@ -47,6 +50,8 @@ export function MonitorTab({ connectionId }: Props) {
   const [variables, setVariables] = useState<NameValue[]>([]);
   const [replication, setReplication] = useState<ReplicationStatus | null>(null);
   const [slow, setSlow] = useState<SlowQueryInfo | null>(null);
+  const [editVar, setEditVar] = useState<{ name: string; value: string; scope: "GLOBAL" | "SESSION" } | null>(null);
+  const [varBusy, setVarBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState("");
@@ -133,6 +138,22 @@ export function MonitorTab({ connectionId }: Props) {
 
   const filterKV = (list: NameValue[]) =>
     filter ? list.filter((v) => v.name.toLowerCase().includes(filter.toLowerCase())) : list;
+
+  const saveVariable = async () => {
+    if (!editVar) return;
+    setVarBusy(true);
+    try {
+      await api.setMonitorVariable(connectionId, editVar.name, editVar.scope, editVar.value);
+      toast.success("Variable updated");
+      setEditVar(null);
+      const next = await api.monitorVariables(connectionId);
+      setVariables(next);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVarBusy(false);
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -242,7 +263,10 @@ export function MonitorTab({ connectionId }: Props) {
             <KVList items={filterKV(status)} />
           </TabsContent>
           <TabsContent value="variables" className="mt-3">
-            <KVList items={filterKV(variables)} />
+            <KVList
+              items={filterKV(variables)}
+              onEdit={(item) => setEditVar({ name: item.name, value: item.value, scope: "GLOBAL" })}
+            />
           </TabsContent>
           <TabsContent value="replication" className="mt-3">
             <ReplicationView data={replication} />
@@ -272,6 +296,36 @@ export function MonitorTab({ connectionId }: Props) {
           </div>
         )}
       </div>
+
+      <Dialog open={editVar !== null} onOpenChange={(o) => !o && setEditVar(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-mono">{editVar?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Scope</Label>
+              <Select value={editVar?.scope ?? "GLOBAL"} onValueChange={(v) => setEditVar((s) => (s ? { ...s, scope: v as "GLOBAL" | "SESSION" } : s))}>
+                <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GLOBAL">GLOBAL</SelectItem>
+                  <SelectItem value="SESSION">SESSION</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label className="text-xs">Value</Label>
+              <Input className="h-8 font-mono" value={editVar?.value ?? ""} onChange={(e) => setEditVar((s) => (s ? { ...s, value: e.target.value } : s))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditVar(null)} disabled={varBusy}>Cancel</Button>
+            <Button onClick={() => void saveVariable()} disabled={varBusy}>
+              {varBusy ? <Loader2 className="animate-spin" /> : <Pencil />} Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={killTarget !== null} onOpenChange={(o) => !o && setKillTarget(null)}>
         <AlertDialogContent>
@@ -422,7 +476,7 @@ function SlowQueriesView({ data }: { data: SlowQueryInfo | null }) {
   );
 }
 
-function KVList({ items }: { items: NameValue[] }) {
+function KVList({ items, onEdit }: { items: NameValue[]; onEdit?: (item: NameValue) => void }) {
   return (
     <div className="overflow-hidden rounded-lg border">
       <table className="w-full text-[12px]">
@@ -431,6 +485,13 @@ function KVList({ items }: { items: NameValue[] }) {
             <tr key={v.name} className="border-t first:border-0 hover:bg-muted/30">
               <td className="w-1/3 px-3 py-1 font-mono text-sky-400">{v.name}</td>
               <td className="px-3 py-1 font-mono break-all text-muted-foreground">{v.value}</td>
+              {onEdit && (
+                <td className="w-8 px-1 py-1 text-right">
+                  <Button size="icon-sm" variant="ghost" onClick={() => onEdit(v)} title="Edit">
+                    <Pencil />
+                  </Button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

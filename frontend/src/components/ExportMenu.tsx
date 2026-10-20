@@ -21,7 +21,7 @@ interface Props {
 }
 
 export function ExportMenu({ connectionId, database, table, orderBy, filters }: Props) {
-  const doExport = (format: "csv" | "json" | "sql") => {
+  const doExport = (format: "csv" | "json" | "sql" | "xlsx") => {
     triggerDownload(tableExportUrl(connectionId, database, table, format, orderBy, filters));
     toast.success(`Exporting ${table}.${format}`, {
       description: "The download should start shortly.",
@@ -43,6 +43,9 @@ export function ExportMenu({ connectionId, database, table, orderBy, filters }: 
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => doExport("json")}>
           <FileJson /> JSON
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => doExport("xlsx")}>
+          <FileSpreadsheet /> Excel (.xlsx)
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => doExport("sql")}>
           <FileText /> SQL (structure + inserts)

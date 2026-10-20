@@ -20,6 +20,7 @@ type Server struct {
 	versions *SchemaVersionStore
 	auth     *authManager
 	updates  *updateManager
+	backups  *backupManager
 
 	queries     sync.Map
 	sessions    *querySessionManager
@@ -43,6 +44,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})
+
+	// scheduled backups
+	mux.HandleFunc("GET /api/backups", s.backupStatusHandler)
+	mux.HandleFunc("PUT /api/backups", s.backupSettingsHandler)
+	mux.HandleFunc("POST /api/backups/run", s.backupRunHandler)
 
 	// self-update
 	mux.HandleFunc("GET /api/update", s.updateStatusHandler)
@@ -81,6 +87,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/rows", s.updateRow)
 	mux.HandleFunc("DELETE /api/connections/{id}/databases/{db}/tables/{table}/rows", s.deleteRow)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-delete", s.deleteRows)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-insert", s.bulkInsertRows)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/maintenance", s.tableMaintenance)
+	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/options", s.updateTableOptions)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
 	mux.HandleFunc("POST /api/connections/{id}/query/{runId}/cancel", s.cancelQueryHandler)
 	mux.HandleFunc("POST /api/connections/{id}/query/file", s.runQueryFile)
@@ -91,12 +100,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/monitor/overview", s.monitorOverview)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/status", s.monitorStatus)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/variables", s.monitorVariables)
+	mux.HandleFunc("PUT /api/connections/{id}/monitor/variables/{name}", s.setMonitorVariable)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/replication", s.replicationStatus)
 	mux.HandleFunc("GET /api/connections/{id}/monitor/slow-queries", s.slowQueries)
 	mux.HandleFunc("DELETE /api/connections/{id}/monitor/process/{pid}", s.monitorKill)
 
 	// import / backup
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import", s.importCSV)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import/json", s.importJSONTable)
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import/excel", s.importExcelTable)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/import/sql", s.importSQL)
 	mux.HandleFunc("POST /api/connections/{id}/import/sql", s.importSQL)
 	mux.HandleFunc("GET /api/connections/{id}/export", s.exportServer)
@@ -112,6 +124,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/users/{host}/{user}/grants", s.userGrants)
 	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/grant", s.grantPrivileges)
 	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/revoke", s.revokePrivileges)
+	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/lock", s.lockUser)
+	mux.HandleFunc("POST /api/connections/{id}/users/{host}/{user}/copy-grants", s.copyGrants)
 
 	// stored routines, triggers, events
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/routines", s.listRoutines)
@@ -133,6 +147,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/connections/{id}/search", s.globalSearch)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{db}/erd", s.erd)
 	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
+	mux.HandleFunc("POST /api/connections/{id}/data-diff", s.dataDiff)
 
 	// schema versions (snapshots / 封板)
 	mux.HandleFunc("GET /api/connections/{id}/schema-versions", s.listSchemaVersions)
@@ -570,6 +585,8 @@ type tableStructureResponse struct {
 	ForeignKeys    []foreignKeyInfo `json:"foreignKeys"`
 	CreateSQL      string           `json:"createSql"`
 	ViewDefinition string           `json:"viewDefinition,omitempty"`
+	Charset        string           `json:"charset,omitempty"`
+	Collation      string           `json:"collation,omitempty"`
 }
 
 func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
@@ -581,12 +598,12 @@ func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
 
 	resp := tableStructureResponse{Name: table, Columns: []columnInfo{}, Indexes: []indexInfo{}, ForeignKeys: []foreignKeyInfo{}}
 
-	var tableType, engine, comment sql.NullString
+	var tableType, engine, comment, collation sql.NullString
 	err := db.QueryRowContext(ctx, `
-		SELECT TABLE_TYPE, ENGINE, TABLE_COMMENT
+		SELECT TABLE_TYPE, ENGINE, TABLE_COMMENT, COALESCE(TABLE_COLLATION, '')
 		FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).
-		Scan(&tableType, &engine, &comment)
+		Scan(&tableType, &engine, &comment, &collation)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -594,6 +611,11 @@ func (s *Server) tableStructure(w http.ResponseWriter, r *http.Request) {
 	resp.Type = tableType.String
 	resp.Engine = engine.String
 	resp.Comment = comment.String
+	resp.Collation = collation.String
+	if resp.Collation != "" {
+		_ = db.QueryRowContext(ctx, `SELECT CHARACTER_SET_NAME FROM information_schema.COLLATIONS
+			WHERE COLLATION_NAME = ?`, resp.Collation).Scan(&resp.Charset)
+	}
 
 	colRows, err := db.QueryContext(ctx, "SHOW FULL COLUMNS FROM "+qualify(dbName, table))
 	if err != nil {
@@ -1071,6 +1093,8 @@ type queryRequest struct {
 	SessionID  string `json:"sessionId,omitempty"`
 	RunID      string `json:"runId,omitempty"`
 	TimeoutSec int    `json:"timeoutSec,omitempty"`
+	PageSize   int    `json:"pageSize,omitempty"`
+	PageOffset int    `json:"pageOffset,omitempty"`
 }
 
 type queryResult struct {
@@ -1084,6 +1108,7 @@ type queryResult struct {
 	Truncated  bool     `json:"truncated"`
 	IsQuery    bool     `json:"isQuery"`
 	Statements int      `json:"statements,omitempty"`
+	HasMore    bool     `json:"hasMore,omitempty"`
 	// Results holds the result sets of earlier query statements. The final
 	// statement's result is exposed in the top-level fields so single
 	// statement responses stay unchanged and rows are not serialised twice.
@@ -1194,6 +1219,73 @@ func (s *Server) runQuery(w http.ResponseWriter, r *http.Request) {
 	var mysqlID int64
 	if err := conn.QueryRowContext(ctx, "SELECT CONNECTION_ID()").Scan(&mysqlID); err == nil {
 		active.setMySQLID(mysqlID)
+	}
+
+	// Single SELECT queries can be paged by wrapping them in an outer SELECT.
+	// Multi-statement scripts and dialect-specific statements keep the old
+	// non-paged behaviour.
+	if in.PageSize > 0 && statementCount == 1 {
+		var single string
+		_ = scanSQL(strings.NewReader(in.SQL), func(stmt string) error {
+			single = stmt
+			return nil
+		})
+		upper := strings.ToUpper(strings.TrimSpace(single))
+		if strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH") {
+			limit := in.PageSize
+			if limit > 5000 {
+				limit = 5000
+			}
+			offset := in.PageOffset
+			if offset < 0 {
+				offset = 0
+			}
+			wrapped := "SELECT * FROM (" + trimStatement(single) + ") AS `_mysqlui_page` LIMIT ? OFFSET ?"
+			pagedStart := time.Now()
+			rows, err := conn.QueryContext(ctx, wrapped, limit+1, offset)
+			if err == nil {
+				defer rows.Close()
+				columns, data, _, scanErr := scanRows(rows, limit+1)
+				if scanErr == nil {
+					hasMore := len(data) > limit
+					if hasMore {
+						data = data[:limit]
+					}
+					res := queryResult{
+						Columns:    columns,
+						Rows:       data,
+						RowCount:   len(data),
+						IsQuery:    true,
+						HasMore:    hasMore,
+						DurationMs: time.Since(pagedStart).Milliseconds(),
+						Message:    fmt.Sprintf("%d row(s) returned", len(data)),
+						Statements: 1,
+					}
+					if session != nil {
+						session.touch()
+					}
+					writeJSON(w, http.StatusOK, res)
+					return
+				}
+				err = scanErr
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				if session != nil {
+					s.sessionManager().remove(in.SessionID)
+				}
+				writeErr(w, http.StatusGatewayTimeout, errors.New("query timed out"))
+				return
+			}
+			if errors.Is(err, context.Canceled) || active.wasCanceled() {
+				if session != nil {
+					s.sessionManager().remove(in.SessionID)
+				}
+				writeErr(w, http.StatusBadGateway, errors.New("query canceled"))
+				return
+			}
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
 	}
 
 	start := time.Now()

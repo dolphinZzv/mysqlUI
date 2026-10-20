@@ -36,6 +36,7 @@ import { api, databaseExportUrl, serverExportUrl, triggerDownload } from "@/lib/
 import type { Connection, CreateTableRequest, DatabaseInfo, TableInfo } from "@/lib/types";
 import type { GenericTabKind } from "@/lib/tabs";
 import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
+import { useRecentTables } from "@/lib/recentObjects";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -100,6 +101,7 @@ export function Sidebar({
 }: Props) {
   const [filter, setFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
+  const recentTables = useRecentTables();
   const [expandedConns, setExpandedConns] = useState<Set<string>>(new Set());
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [dbs, setDbs] = useState<Record<string, DatabaseInfo[]>>({});
@@ -324,6 +326,33 @@ export function Sidebar({
             <Button size="sm" variant="outline" className="mt-3 w-full" onClick={onNewConnection}>
               <Plus /> Add connection
             </Button>
+          </div>
+        )}
+
+        {recentTables.filter((r) => connections.some((c) => c.id === r.connectionId)).length > 0 && (
+          <div className="mb-2 border-b border-sidebar-border pb-1.5">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <History className="h-3 w-3" /> Recent tables
+            </div>
+            {recentTables
+              .filter((r) => connections.some((c) => c.id === r.connectionId))
+              .slice(0, 8)
+              .map((r) => {
+                const conn = connections.find((c) => c.id === r.connectionId);
+                if (!conn) return null;
+                return (
+                  <div
+                    key={r.id}
+                    className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] hover:bg-sidebar-accent"
+                    title={`${r.connectionName} / ${r.database}.${r.table}`}
+                    onClick={() => onOpenTable(conn, r.database, r.table)}
+                  >
+                    <Table2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                    <span className="min-w-0 flex-1 truncate">{r.table}</span>
+                    <span className="truncate text-[10px] text-muted-foreground">{r.database}</span>
+                  </div>
+                );
+              })}
           </div>
         )}
 

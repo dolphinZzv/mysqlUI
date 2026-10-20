@@ -1,4 +1,6 @@
 import type {
+  BackupStatus,
+  DataDiffResult,
   ReplicationStatus,
   SlowQueryInfo,
   UpdateApplyResult,
@@ -236,6 +238,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ keys }),
     }),
+  bulkInsertRows: (id: string, db: string, table: string, columns: string[], rows: unknown[][]) =>
+    request<{ ok: boolean; affected: number }>(`${tableBase(id, db, table)}/rows/bulk-insert`, {
+      method: "POST",
+      body: JSON.stringify({ columns, rows }),
+    }),
+  tableMaintenance: (id: string, db: string, table: string, operation: string) =>
+    request<{ ok: boolean; operation: string }>(`${tableBase(id, db, table)}/maintenance`, {
+      method: "POST",
+      body: JSON.stringify({ operation }),
+    }),
+  updateTableOptions: (
+    id: string,
+    db: string,
+    table: string,
+    body: { engine: string; charset: string; collation: string; comment: string }
+  ) =>
+    request<{ ok: boolean }>(`${tableBase(id, db, table)}/options`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 
   // table designer (DDL)
   createTable: (id: string, db: string, body: CreateTableRequest) =>
@@ -277,7 +299,7 @@ export const api = {
     id: string,
     database: string,
     sql: string,
-    opts?: { runId?: string; sessionId?: string; timeoutSec?: number }
+    opts?: { runId?: string; sessionId?: string; timeoutSec?: number; pageSize?: number; pageOffset?: number }
   ) =>
     request<QueryResult>(`${connBase(id)}/query`, {
       method: "POST",
@@ -297,6 +319,12 @@ export const api = {
       body: JSON.stringify({ sql }),
     }),
 
+  // scheduled backups
+  backupStatus: () => request<BackupStatus>("/backups"),
+  setBackupSettings: (body: { enabled: boolean; intervalHours: number; retentionDays: number; directory: string }) =>
+    request<BackupStatus>("/backups", { method: "PUT", body: JSON.stringify(body) }),
+  runBackup: () => request<BackupStatus>("/backups/run", { method: "POST" }),
+
   // self-update
   updateStatus: () => request<UpdateStatus>("/update"),
   setUpdateSettings: (enabled: boolean, intervalMinutes: number) =>
@@ -313,12 +341,30 @@ export const api = {
   monitorOverview: (id: string) => request<MonitorOverview>(`${connBase(id)}/monitor/overview`),
   monitorStatus: (id: string) => request<NameValue[]>(`${connBase(id)}/monitor/status`),
   monitorVariables: (id: string) => request<NameValue[]>(`${connBase(id)}/monitor/variables`),
+  setMonitorVariable: (id: string, name: string, scope: "GLOBAL" | "SESSION", value: string) =>
+    request<{ ok: boolean }>(`${connBase(id)}/monitor/variables/${enc(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ scope, value }),
+    }),
   replicationStatus: (id: string) => request<ReplicationStatus>(`${connBase(id)}/monitor/replication`),
   slowQueries: (id: string) => request<SlowQueryInfo>(`${connBase(id)}/monitor/slow-queries`),
   killProcess: (id: string, pid: number, queryOnly: boolean) =>
     request<{ ok: boolean }>(`${connBase(id)}/monitor/process/${pid}?query=${queryOnly}`, { method: "DELETE" }),
 
   // import
+  importJSON: (id: string, db: string, table: string, file: File, truncate: boolean) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("truncate", String(truncate));
+    return upload<{ imported: number; columns: string[] }>(`${tableBase(id, db, table)}/import/json`, form);
+  },
+  importExcel: (id: string, db: string, table: string, file: File, opts: { hasHeader: boolean; truncate: boolean }) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("hasHeader", String(opts.hasHeader));
+    form.append("truncate", String(opts.truncate));
+    return upload<{ imported: number; columns: string[] }>(`${tableBase(id, db, table)}/import/excel`, form);
+  },
   importCSV: (
     id: string,
     db: string,
@@ -364,6 +410,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  setUserLock: (id: string, host: string, user: string, locked: boolean) =>
+    request<{ ok: boolean; locked: boolean }>(`${connBase(id)}/users/${enc(host)}/${enc(user)}/lock`, {
+      method: "POST",
+      body: JSON.stringify({ locked }),
+    }),
+  copyGrants: (id: string, host: string, user: string, targetUser: string, targetHost: string) =>
+    request<{ ok: boolean; grants: number }>(`${connBase(id)}/users/${enc(host)}/${enc(user)}/copy-grants`, {
+      method: "POST",
+      body: JSON.stringify({ targetUser, targetHost }),
+    }),
   revoke: (id: string, host: string, user: string, body: { privileges: string[]; database: string; table: string }) =>
     request<{ ok: boolean }>(`${connBase(id)}/users/${enc(host)}/${enc(user)}/revoke`, {
       method: "POST",
@@ -391,6 +447,10 @@ export const api = {
   globalSearch: (id: string, q: string) =>
     request<SearchResult>(`${connBase(id)}/search?q=${enc(q)}`),
   erd: (id: string, db: string) => request<ErdResponse>(`${dbBase(id, db)}/erd`),
+  dataDiff: (
+    id: string,
+    body: { sourceDatabase: string; sourceTable: string; targetDatabase: string; targetTable: string }
+  ) => request<DataDiffResult>(`${connBase(id)}/data-diff`, { method: "POST", body: JSON.stringify(body) }),
   schemaDiff: (
     id: string,
     source: { database: string; table: string },
@@ -431,7 +491,7 @@ export function tableExportUrl(
   id: string,
   db: string,
   table: string,
-  format: "csv" | "json" | "sql",
+  format: "csv" | "json" | "sql" | "xlsx",
   orderBy?: string,
   filters?: FilterCondition[]
 ): string {

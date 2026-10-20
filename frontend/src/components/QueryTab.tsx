@@ -15,6 +15,7 @@ import {
   Hammer,
   History,
   Loader2,
+  PanelRight,
   Pin,
   PinOff,
   Play,
@@ -26,12 +27,14 @@ import {
   Trash2,
   TrendingUp,
   Upload,
+  Wand2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
 import type { QueryTabDef } from "@/lib/tabs";
 import { useI18n } from "@/lib/i18n";
 import { findPinnedQuery, pinQuery, unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
+import { formatSQL } from "@/lib/sqlFormat";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -49,6 +52,7 @@ import { ChartView } from "@/components/ChartView";
 import { ExplainDialog } from "@/components/ExplainDialog";
 import { SqlEditor, type SqlSchema } from "@/components/SqlEditor";
 import { QueryBuilder } from "@/components/QueryBuilder";
+import { SnippetPanel } from "@/components/SnippetPanel";
 
 interface Props {
   tab: QueryTabDef;
@@ -58,6 +62,7 @@ interface Props {
 const HISTORY_KEY = "mysqlui.queryHistory";
 const FAVORITES_KEY = "mysqlui.favorites";
 const TIMEOUT_KEY = "mysqlui.queryTimeout";
+const QUERY_PAGE_SIZE = 1000;
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -132,6 +137,9 @@ export function QueryTab({ tab, connections }: Props) {
   });
   const [inTransaction, setInTransaction] = useState(false);
   const [txBusy, setTxBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [lastRunSql, setLastRunSql] = useState("");
+  const [snippetsOpen, setSnippetsOpen] = useState(() => localStorage.getItem("mysqlui.snippetsOpen") === "1");
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -182,8 +190,8 @@ export function QueryTab({ tab, connections }: Props) {
     });
   };
 
-  const run = useCallback(async () => {
-    const text = sql.trim();
+  const run = useCallback(async (override?: string) => {
+    const text = (override ?? sql).trim();
     if (!text) return;
     if (!connectionId) {
       toast.error(t("query.connection", "Connection") + " ?");
@@ -199,8 +207,11 @@ export function QueryTab({ tab, connections }: Props) {
         runId,
         sessionId: sessionIdRef.current,
         timeoutSec,
+        pageSize: QUERY_PAGE_SIZE,
+        pageOffset: 0,
       });
       setResult(res);
+      setLastRunSql(text);
       const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
       setActiveResult(Math.max(0, count - 1));
       if (/^\s*(BEGIN|START\s+TRANSACTION)\b/i.test(text)) setInTransaction(true);
@@ -245,6 +256,35 @@ export function QueryTab({ tab, connections }: Props) {
     },
     [connectionId, database, timeoutSec, t],
   );
+
+  const loadMore = useCallback(async () => {
+    if (!connectionId || !result?.isQuery || !result.hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await api.runQuery(connectionId, database, lastRunSql, {
+        sessionId: sessionIdRef.current,
+        timeoutSec,
+        pageSize: QUERY_PAGE_SIZE,
+        pageOffset: result.rows.length,
+      });
+      setResult((prev) => {
+        if (!prev) return res;
+        const rows = [...prev.rows, ...res.rows];
+        return {
+          ...prev,
+          rows,
+          rowCount: rows.length,
+          hasMore: res.hasMore,
+          message: `${rows.length} row(s) loaded`,
+          truncated: prev.truncated || res.truncated,
+        };
+      });
+    } catch (err) {
+      toast.error(t("common.error", "Error"), { description: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [connectionId, database, result, lastRunSql, timeoutSec, loadingMore, t]);
 
   const runFile = useCallback(
     async (file: File) => {
@@ -387,6 +427,19 @@ export function QueryTab({ tab, connections }: Props) {
         </Select>
 
         <div className="ml-auto flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant={snippetsOpen ? "default" : "outline"}
+            onClick={() => {
+              setSnippetsOpen((v) => {
+                localStorage.setItem("mysqlui.snippetsOpen", v ? "0" : "1");
+                return !v;
+              });
+            }}
+            title={t("snippets.title", "SQL snippets")}
+          >
+            <PanelRight />
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button size="sm" variant={inTransaction ? "default" : "outline"} disabled={running || txBusy || !connectionId}>
@@ -476,6 +529,15 @@ export function QueryTab({ tab, connections }: Props) {
           <Button size="sm" variant="outline" onClick={() => { setSql(""); setResult(null); setActiveResult(0); setError(null); }}>
             <Eraser /> {t("query.clear", "Clear")}
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setSql(formatSQL(sql))}
+            disabled={!sql.trim() || running}
+            title={t("query.format", "Format")}
+          >
+            <Wand2 /> {t("query.format", "Format")}
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setExplainOpen(true)} disabled={!sql.trim()}>
             <TrendingUp /> {t("explain.button", "Explain")}
           </Button>
@@ -504,7 +566,7 @@ export function QueryTab({ tab, connections }: Props) {
               <Square /> {t("query.cancel", "Cancel")}
             </Button>
           ) : (
-            <Button size="sm" onClick={run} disabled={running || txBusy || !connectionId}>
+            <Button size="sm" onClick={() => void run()} disabled={running || txBusy || !connectionId}>
               {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
               <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
             </Button>
@@ -512,154 +574,169 @@ export function QueryTab({ tab, connections }: Props) {
         </div>
       </div>
 
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
       {builderOpen && database ? (
-        <div className="h-72 min-h-0 shrink-0 border-b">
-          <QueryBuilder
-            connectionId={connectionId}
-            database={database}
-            onApply={(generated) => {
-              setSql(generated);
-              setBuilderOpen(false);
-            }}
-          />
-        </div>
-      ) : (
-        <SqlEditor
-          value={sql}
-          onChange={setSql}
-          onRun={run}
-          schema={schema}
-          placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
-          className="h-56 shrink-0 border-b"
-        />
-      )}
-
-      <div className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5 text-xs">
-        {running && (
-          <span className="flex items-center gap-1.5 text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" /> {t("common.loading", "Loading…")}
-          </span>
-        )}
-        {!running && error && (
-          <span className="flex items-center gap-1.5 text-destructive">
-            <AlertTriangle className="h-3.5 w-3.5" /> {t("query.error", "Error")}
-          </span>
-        )}
-        {!running && !error && result && (
-          <span className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-emerald-500">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              {result.message}
-            </span>
-            <span className="flex items-center gap-1 text-muted-foreground">
-              <Clock className="h-3 w-3" /> {result.durationMs} ms
-            </span>
-            {result.truncated && (
-              <Badge variant="warning" className="gap-1">
-                <AlertTriangle className="h-3 w-3" /> {t("query.truncated", "truncated")}
-              </Badge>
-            )}
-          </span>
-        )}
-        {!running && !error && !result && (
-          <span className="text-muted-foreground">
-            {connection ? connection.name : "—"} · {t("query.runHint", "Run a query to see results")}
-          </span>
-        )}
-
-        {currentResult && currentResult.isQuery && currentResult.rowCount > 0 && (
-          <div className="ml-auto flex items-center gap-1.5">
-            <Button
-              size="sm"
-              variant={view === "chart" ? "default" : "outline"}
-              onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
-              title={t("chart.title", "Chart")}
-            >
-              {view === "chart" ? <Table2 /> : <BarChart3 />}
-              {view === "chart" ? t("chart.viewTable", "Table") : t("chart.viewChart", "Chart")}
-            </Button>
-            <Button size="icon-sm" variant="ghost" title={t("query.copyInsert", "Copy as INSERT")} onClick={() => copyResult("insert")}>
-              <Copy />
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline">
-                  <Download /> {t("table.export", "Export")}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => exportResult("csv")}>
-                  <FileSpreadsheet /> {t("query.exportCsv", "CSV")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => exportResult("json")}>
-                  <FileJson /> {t("query.exportJson", "JSON")}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => copyResult("csv")}>
-                  <Copy /> {t("query.copyCsv", "Copy as CSV")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
-      </div>
-
-      {resultSets.length > 1 && (
-        <div className="flex items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-3 py-1.5">
-          <span className="mr-1 shrink-0 text-xs text-muted-foreground">
-            {t("query.resultSets", "Results")}
-          </span>
-          {resultSets.map((rs, i) => (
-            <Button
-              key={i}
-              size="sm"
-              variant={i === activeResult ? "default" : "outline"}
-              className="h-6 shrink-0 px-2 text-xs"
-              onClick={() => setActiveResult(i)}
-            >
-              #{i + 1} · {formatNumber(rs.rowCount)}
-            </Button>
-          ))}
-        </div>
-      )}
-
-      <div className="min-h-0 flex-1">
-        {error ? (
-          <div className="h-full overflow-auto p-4">
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 font-mono text-[13px] text-destructive">
-              {error}
-            </div>
-          </div>
-        ) : currentResult?.isQuery ? (
-          view === "chart" ? (
-            <ChartView
-              rows={rowRecords}
-              columns={currentResult.columns}
-              storageKey={`query:${connectionId}:${database}:${activeResult}`}
+          <div className="h-72 min-h-0 shrink-0 border-b">
+            <QueryBuilder
+              connectionId={connectionId}
+              database={database}
+              onApply={(generated) => {
+                setSql(generated);
+                setBuilderOpen(false);
+              }}
             />
-          ) : (
-            <ResultGrid columns={currentResult.columns} rows={currentResult.rows} />
-          )
-        ) : result ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="rounded-lg border bg-card px-6 py-5 text-center">
-              <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-emerald-500" />
-              <p className="text-sm font-medium">{result.message}</p>
-              {result.lastInsertId > 0 && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Last insert id: <span className="font-mono">{result.lastInsertId}</span>
-                </p>
-              )}
-            </div>
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            <div className="text-center">
-              <Play className="mx-auto mb-2 h-6 w-6 opacity-40" />
-              {t("query.runHint", "Run a query to see results")}
+          <SqlEditor
+            value={sql}
+            onChange={setSql}
+            onRun={(selected) => void run(selected)}
+            schema={schema}
+            placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
+            className="h-56 shrink-0 border-b"
+          />
+        )}
+  
+        <div className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5 text-xs">
+          {running && (
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> {t("common.loading", "Loading…")}
+            </span>
+          )}
+          {!running && error && (
+            <span className="flex items-center gap-1.5 text-destructive">
+              <AlertTriangle className="h-3.5 w-3.5" /> {t("query.error", "Error")}
+            </span>
+          )}
+          {!running && !error && result && (
+            <span className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5 text-emerald-500">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {result.message}
+              </span>
+              <span className="flex items-center gap-1 text-muted-foreground">
+                <Clock className="h-3 w-3" /> {result.durationMs} ms
+              </span>
+              {result.truncated && (
+                <Badge variant="warning" className="gap-1">
+                  <AlertTriangle className="h-3 w-3" /> {t("query.truncated", "truncated")}
+                </Badge>
+              )}
+            </span>
+          )}
+          {!running && !error && !result && (
+            <span className="text-muted-foreground">
+              {connection ? connection.name : "—"} · {t("query.runHint", "Run a query to see results")}
+            </span>
+          )}
+  
+          {currentResult && currentResult.isQuery && currentResult.rowCount > 0 && (
+            <div className="ml-auto flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant={view === "chart" ? "default" : "outline"}
+                onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
+                title={t("chart.title", "Chart")}
+              >
+                {view === "chart" ? <Table2 /> : <BarChart3 />}
+                {view === "chart" ? t("chart.viewTable", "Table") : t("chart.viewChart", "Chart")}
+              </Button>
+              <Button size="icon-sm" variant="ghost" title={t("query.copyInsert", "Copy as INSERT")} onClick={() => copyResult("insert")}>
+                <Copy />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline">
+                    <Download /> {t("table.export", "Export")}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => exportResult("csv")}>
+                    <FileSpreadsheet /> {t("query.exportCsv", "CSV")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => exportResult("json")}>
+                    <FileJson /> {t("query.exportJson", "JSON")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => copyResult("csv")}>
+                    <Copy /> {t("query.copyCsv", "Copy as CSV")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
+          )}
+        </div>
+  
+        {resultSets.length > 1 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto border-b bg-muted/10 px-3 py-1.5">
+            <span className="mr-1 shrink-0 text-xs text-muted-foreground">
+              {t("query.resultSets", "Results")}
+            </span>
+            {resultSets.map((rs, i) => (
+              <Button
+                key={i}
+                size="sm"
+                variant={i === activeResult ? "default" : "outline"}
+                className="h-6 shrink-0 px-2 text-xs"
+                onClick={() => setActiveResult(i)}
+              >
+                #{i + 1} · {formatNumber(rs.rowCount)}
+              </Button>
+            ))}
           </div>
         )}
+  
+        <div className="min-h-0 flex-1">
+          {error ? (
+            <div className="h-full overflow-auto p-4">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 font-mono text-[13px] text-destructive">
+                {error}
+              </div>
+            </div>
+          ) : currentResult?.isQuery ? (
+            view === "chart" ? (
+              <ChartView
+                rows={rowRecords}
+                columns={currentResult.columns}
+                storageKey={`query:${connectionId}:${database}:${activeResult}`}
+              />
+            ) : (
+              <ResultGrid columns={currentResult.columns} rows={currentResult.rows} />
+            )
+          ) : result ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="rounded-lg border bg-card px-6 py-5 text-center">
+                <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-emerald-500" />
+                <p className="text-sm font-medium">{result.message}</p>
+                {result.lastInsertId > 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Last insert id: <span className="font-mono">{result.lastInsertId}</span>
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <div className="text-center">
+                <Play className="mx-auto mb-2 h-6 w-6 opacity-40" />
+                {t("query.runHint", "Run a query to see results")}
+              </div>
+            </div>
+          )}
+        </div>
+  
+          </div>
+        <SnippetPanel
+          open={snippetsOpen}
+          onClose={() => {
+            setSnippetsOpen(false);
+            localStorage.setItem("mysqlui.snippetsOpen", "0");
+          }}
+          currentSql={sql}
+          connectionName={connection?.name ?? tab.connectionName}
+          database={database}
+        />
       </div>
 
       <ExplainDialog

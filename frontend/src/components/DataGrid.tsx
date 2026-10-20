@@ -4,6 +4,7 @@ import {
   ArrowUp,
   ChevronsUpDown,
   Copy,
+  CopyPlus,
   Eye,
   Key,
   Link2,
@@ -31,10 +32,12 @@ interface Props {
   columnsMeta: ColumnInfo[];
   primaryKey: string[];
   foreignKeys?: ForeignKeyInfo[];
+  tableName?: string;
   orderBy?: string;
   onSort?: (column: string) => void;
   onUpdateCell: (rowIndex: number, column: string, value: unknown) => Promise<void>;
   onDeleteRow: (rowIndex: number) => void;
+  onDuplicateRow?: (rowIndex: number) => void;
   onViewCell?: (rowIndex: number, column: string) => void;
   onJump?: (foreignKey: ForeignKeyInfo, value: unknown) => void;
   /** Row indices (page-local) that are currently selected. */
@@ -53,10 +56,12 @@ export function DataGrid({
   columnsMeta,
   primaryKey,
   foreignKeys = [],
+  tableName = "table",
   orderBy,
   onSort,
   onUpdateCell,
   onDeleteRow,
+  onDuplicateRow,
   onViewCell,
   onJump,
   selected,
@@ -197,6 +202,50 @@ export function DataGrid({
         return next;
       });
     }
+  };
+
+  const valueText = (value: unknown) =>
+    value === null || value === undefined ? "NULL" : typeof value === "object" ? JSON.stringify(value) : String(value);
+
+  const sqlLiteral = (value: unknown) => {
+    if (value === null || value === undefined) return "NULL";
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    return "'" + String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  };
+
+  const copyText = (text: string, message: string) => {
+    void navigator.clipboard.writeText(text).then(() => toast.success(message));
+  };
+
+  const copyRowsTSV = (indices: number[]) => {
+    const text = indices
+      .sort((a, b) => a - b)
+      .map((r) => rows[r].map(valueText).join("\t"))
+      .join("\n");
+    copyText(text, indices.length === 1 ? "Row copied" : `${indices.length} rows copied`);
+  };
+
+  const rowInsertSQL = (r: number) => {
+    const cols = columns.map((c) => `\`${c}\``).join(", ");
+    const vals = rows[r].map(sqlLiteral).join(", ");
+    return `INSERT INTO \`${tableName}\` (${cols}) VALUES (${vals});`;
+  };
+
+  const rowUpdateSQL = (r: number) => {
+    if (primaryKey.length === 0) return "";
+    const assignments = columns
+      .filter((c) => !primaryKey.includes(c))
+      .map((c) => {
+        const idx = columns.indexOf(c);
+        return `\`${c}\` = ${sqlLiteral(rows[r][idx])}`;
+      });
+    const where = primaryKey
+      .map((c) => {
+        const idx = columns.indexOf(c);
+        return `\`${c}\` = ${sqlLiteral(rows[r][idx])}`;
+      })
+      .join(" AND ");
+    return `UPDATE \`${tableName}\` SET ${assignments.join(", ")} WHERE ${where};`;
   };
 
   return (
@@ -370,6 +419,29 @@ export function DataGrid({
                         </td>
                       </ContextMenuTrigger>
                       <ContextMenuContent>
+                        {selection.size > 1 && (
+                          <ContextMenuItem onClick={() => copyRowsTSV([...selection])}>
+                            <Copy /> Copy selected rows
+                          </ContextMenuItem>
+                        )}
+                        <ContextMenuItem onClick={() => copyRowsTSV([r])}>
+                          <Copy /> Copy row
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => copyText(rowInsertSQL(r), "INSERT copied")}>
+                          <CopyPlus /> Copy as INSERT
+                        </ContextMenuItem>
+                        <ContextMenuItem
+                          disabled={primaryKey.length === 0}
+                          onClick={() => copyText(rowUpdateSQL(r), "UPDATE copied")}
+                        >
+                          <CopyPlus /> Copy as UPDATE
+                        </ContextMenuItem>
+                        {onDuplicateRow && (
+                          <ContextMenuItem onClick={() => onDuplicateRow(r)}>
+                            <CopyPlus /> Duplicate row
+                          </ContextMenuItem>
+                        )}
+                        <ContextMenuSeparator />
                         <ContextMenuItem onClick={() => beginEdit(r, c)}>
                           <Pencil /> Edit
                         </ContextMenuItem>

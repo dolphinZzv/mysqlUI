@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Database, FileSpreadsheet, FileText, Loader2, Upload } from "lucide-react";
+import { Database, FileJson, FileSpreadsheet, FileText, Loader2, Upload } from "lucide-react";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -28,7 +28,7 @@ interface Props {
 
 export function ImportDialog({ open, onOpenChange, connectionId, connectionName, database, table, onDone }: Props) {
   const { t } = useI18n();
-  const [mode, setMode] = useState<"csv" | "sql">(table ? "csv" : "sql");
+  const [mode, setMode] = useState<"csv" | "json" | "excel" | "sql">(table ? "csv" : "sql");
   const [file, setFile] = useState<File | null>(null);
   const [hasHeader, setHasHeader] = useState(true);
   const [truncate, setTruncate] = useState(false);
@@ -60,6 +60,14 @@ export function ImportDialog({ open, onOpenChange, connectionId, connectionName,
           nullValue,
           delimiter,
         });
+        toast.success(`${t("import.done", "Import complete")}: ${res.imported} ${t("import.rows", "rows")}`);
+      } else if (mode === "json") {
+        if (!table || !database) throw new Error("JSON import requires a table");
+        const res = await api.importJSON(connectionId, database, table, file, truncate);
+        toast.success(`${t("import.done", "Import complete")}: ${res.imported} ${t("import.rows", "rows")}`);
+      } else if (mode === "excel") {
+        if (!table || !database) throw new Error("Excel import requires a table");
+        const res = await api.importExcel(connectionId, database, table, file, { hasHeader, truncate });
         toast.success(`${t("import.done", "Import complete")}: ${res.imported} ${t("import.rows", "rows")}`);
       } else {
         const res = await api.importSQL(connectionId, database, file);
@@ -98,7 +106,29 @@ export function ImportDialog({ open, onOpenChange, connectionId, connectionName,
             )}
           >
             <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
-            {t("import.csv", "Import CSV into table")}
+            {t("import.csv", "Import CSV")}
+          </button>
+          <button
+            disabled={!table || !database}
+            onClick={() => setMode("json")}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm disabled:opacity-40",
+              mode === "json" ? "border-primary bg-primary/10" : "hover:bg-accent"
+            )}
+          >
+            <FileJson className="h-4 w-4 text-amber-400" />
+            {t("import.json", "Import JSON")}
+          </button>
+          <button
+            disabled={!table || !database}
+            onClick={() => setMode("excel")}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm disabled:opacity-40",
+              mode === "excel" ? "border-primary bg-primary/10" : "hover:bg-accent"
+            )}
+          >
+            <FileSpreadsheet className="h-4 w-4 text-sky-400" />
+            {t("import.excel", "Import Excel")}
           </button>
           <button
             onClick={() => setMode("sql")}
@@ -119,7 +149,7 @@ export function ImportDialog({ open, onOpenChange, connectionId, connectionName,
           <input
             ref={inputRef}
             type="file"
-            accept={mode === "csv" ? ".csv,.tsv,.txt" : ".sql,.txt"}
+            accept={mode === "csv" ? ".csv,.tsv,.txt" : mode === "json" ? ".json" : mode === "excel" ? ".xlsx,.xls" : ".sql,.txt"}
             className="hidden"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
@@ -128,27 +158,31 @@ export function ImportDialog({ open, onOpenChange, connectionId, connectionName,
           {file && <span className="mt-0.5 text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} KB</span>}
         </div>
 
-        {mode === "csv" ? (
+        {mode === "csv" || mode === "excel" || mode === "json" ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
-                <Label className="text-xs">{t("import.delimiter", "Delimiter")}</Label>
-                <Input className="h-8" value={delimiter} onChange={(e) => setDelimiter(e.target.value)} />
+            {mode === "csv" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label className="text-xs">{t("import.delimiter", "Delimiter")}</Label>
+                  <Input className="h-8" value={delimiter} onChange={(e) => setDelimiter(e.target.value)} />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-xs">{t("import.nullValue", "NULL marker")}</Label>
+                  <Input
+                    className="h-8"
+                    placeholder="\\N"
+                    value={nullValue}
+                    onChange={(e) => setNullValue(e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="grid gap-1.5">
-                <Label className="text-xs">{t("import.nullValue", "NULL marker")}</Label>
-                <Input
-                  className="h-8"
-                  placeholder="\\N"
-                  value={nullValue}
-                  onChange={(e) => setNullValue(e.target.value)}
-                />
-              </div>
-            </div>
-            <label className="flex cursor-pointer items-center gap-2 text-sm">
-              <input type="checkbox" className="accent-primary" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
-              {t("import.hasHeader", "First row contains column names")}
-            </label>
+            )}
+            {(mode === "csv" || mode === "excel") && (
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="checkbox" className="accent-primary" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
+                {t("import.hasHeader", "First row contains column names")}
+              </label>
+            )}
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" className="accent-primary" checked={truncate} onChange={(e) => setTruncate(e.target.checked)} />
               {t("import.truncate", "Truncate table before import")}

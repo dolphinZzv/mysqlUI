@@ -8,7 +8,7 @@ export interface SqlSchema {
 interface Props {
   value: string;
   onChange: (value: string) => void;
-  onRun?: () => void;
+  onRun?: (selected?: string) => void;
   schema?: SqlSchema;
   placeholder?: string;
   className?: string;
@@ -210,6 +210,24 @@ export function SqlEditor({ value, onChange, onRun, schema, placeholder, classNa
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent).detail?.text as string | undefined;
+      const ta = textareaRef.current;
+      if (!text || !ta) return;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const next = value.slice(0, start) + text + value.slice(end);
+      onChange(next);
+      requestAnimationFrame(() => {
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = start + text.length;
+      });
+    };
+    window.addEventListener("mysqlui:insertSql", handler);
+    return () => window.removeEventListener("mysqlui:insertSql", handler);
+  }, [value, onChange]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (suggestions.length > 0) {
       if (e.key === "ArrowDown") {
@@ -237,7 +255,9 @@ export function SqlEditor({ value, onChange, onRun, schema, placeholder, classNa
 
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      onRun?.();
+      const el = e.currentTarget;
+      const selectedText = el.selectionEnd > el.selectionStart ? value.slice(el.selectionStart, el.selectionEnd) : "";
+      onRun?.(selectedText.trim() ? selectedText : undefined);
       return;
     }
     if (e.key === " " && e.ctrlKey) {

@@ -46,8 +46,9 @@ func runServer() {
 
 	auth := newAuthManager(dir)
 	updates := newUpdateManager(dir)
+	backups := newBackupManager(dir, store)
 	sessions := newQuerySessionManager()
-	srv := &Server{store: store, versions: versions, auth: auth, updates: updates, sessions: sessions}
+	srv := &Server{store: store, versions: versions, auth: auth, updates: updates, backups: backups, sessions: sessions}
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +93,7 @@ func runServer() {
 	defer cancelUpdates()
 	go updates.run(updateCtx)
 	go sessions.cleanup(updateCtx)
+	go backups.run(updateCtx)
 
 	// Wait for a termination signal and shut down gracefully.
 	stop := make(chan os.Signal, 1)

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { Toaster, toast } from "sonner";
 import {
   Database,
+  HardDriveDownload,
   Languages,
   LogOut,
   Moon,
@@ -46,7 +47,9 @@ import { ObjectSearch } from "@/components/ObjectSearch";
 import { ImportDialog } from "@/components/ImportDialog";
 import { LoginScreen } from "@/components/LoginScreen";
 import { UpdateDialog } from "@/components/UpdateDialog";
+import { BackupDialog } from "@/components/BackupDialog";
 import { useRouter, sameRoute, type Route } from "@/lib/router";
+import { recordRecentTable } from "@/lib/recentObjects";
 
 const THEME_KEY = "mysqlui.theme";
 const TABS_KEY = "mysqlui.tabs";
@@ -133,11 +136,13 @@ export default function App() {
   });
   const [tabs, setTabs] = useState<TabDef[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Connection | null>(null);
   const [appVersion, setAppVersion] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [importState, setImportState] = useState<{
     open: boolean;
     connection: Connection | null;
@@ -300,6 +305,7 @@ export default function App() {
 
   // ---- tab helpers ----
   const openTable = useCallback((connection: Connection, database: string, table: string) => {
+    recordRecentTable({ connectionId: connection.id, connectionName: connection.name, database, table });
     const id = tableTabId(connection.id, database, table);
     setTabs((prev) => {
       if (prev.some((x) => x.id === id)) return prev;
@@ -371,6 +377,18 @@ export default function App() {
       const fallback = next[idx] ?? next[idx - 1] ?? next[next.length - 1];
       setActiveId(fallback ? fallback.id : null);
     }
+  };
+
+  const reorderTabs = (fromId: string, toId: string) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.id === fromId);
+      const to = prev.findIndex((t) => t.id === toId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
   };
 
   const renameTab = (oldId: string, newName: string) => {
@@ -493,6 +511,9 @@ export default function App() {
                 <DropdownMenuItem onClick={() => setUpdateOpen(true)}>
                   <RefreshCw /> {t("app.update", "Update")}
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setBackupOpen(true)}>
+                  <HardDriveDownload /> {t("app.backups", "Scheduled backups")}
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
@@ -549,6 +570,14 @@ export default function App() {
                   return (
                     <div
                       key={tab.id}
+                      draggable
+                      onDragStart={() => setDragTabId(tab.id)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => {
+                        if (dragTabId && dragTabId !== tab.id) reorderTabs(dragTabId, tab.id);
+                        setDragTabId(null);
+                      }}
+                      onDragEnd={() => setDragTabId(null)}
                       className={cn(
                         "group flex min-w-[140px] max-w-[240px] cursor-pointer items-center gap-2 border-r px-3 text-[13px] transition-colors",
                         active ? "bg-background text-foreground" : "text-muted-foreground hover:bg-accent/50"
@@ -612,6 +641,7 @@ export default function App() {
 
       <ConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} connection={editing} onSaved={refreshConnections} />
       <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} />
+      <BackupDialog open={backupOpen} onOpenChange={setBackupOpen} />
 
       <ObjectSearch
         open={searchOpen}
