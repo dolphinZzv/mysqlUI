@@ -36,6 +36,14 @@ import type { QueryTabDef } from "@/lib/tabs";
 import { useI18n } from "@/lib/i18n";
 import { findPinnedQuery, pinQuery, unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { readQueryDraft, writeQueryDraft } from "@/lib/queryDrafts";
+import {
+  clearQueryHistory,
+  loadQueryHistory,
+  pushQueryHistory,
+  removeQueryHistory,
+  type QueryHistoryItem,
+} from "@/lib/queryHistory";
+import { QueryHistoryDialog } from "@/components/QueryHistoryDialog";
 import { formatSQL } from "@/lib/sqlFormat";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -57,13 +65,15 @@ import { QueryBuilder } from "@/components/QueryBuilder";
 import { SnippetPanel } from "@/components/SnippetPanel";
 import { ParameterDialog } from "@/components/ParameterDialog";
 import { extractParams } from "@/lib/sqlParams";
+import { assessSQLRisk, type SqlRisk } from "@/lib/sqlRisk";
+import { lineAt, statementAt } from "@/lib/sqlStatement";
+import { RiskDialog } from "@/components/RiskDialog";
 
 interface Props {
   tab: QueryTabDef;
   connections: Connection[];
 }
 
-const HISTORY_KEY = "mysqlui.queryHistory";
 const FAVORITES_KEY = "mysqlui.favorites";
 const TIMEOUT_KEY = "mysqlui.queryTimeout";
 const QUERY_PAGE_SIZE = 1000;
@@ -109,6 +119,21 @@ function toXLS(columns: string[], rows: unknown[][]): string {
     .join("")}</tbody></table></body></html>`;
 }
 
+function sqlLiteralValue(value: unknown): string {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "'" + String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+}
+
+function toMarkdown(columns: string[], rows: unknown[][]): string {
+  const esc = (v: unknown) => String(v ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return [
+    `| ${columns.map(esc).join(" | ")} |`,
+    `| ${columns.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(esc).join(" | ")} |`),
+  ].join("\n");
+}
+
 function download(name: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -135,9 +160,10 @@ export function QueryTab({ tab, connections }: Props) {
   const [resultHidden, setResultHidden] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [history, setHistory] = useState<string[]>(() => loadJSON<string[]>(HISTORY_KEY, []));
+  const [history, setHistory] = useState<QueryHistoryItem[]>(loadQueryHistory);
   const [favorites, setFavorites] = useState<string[]>(() => loadJSON<string[]>(FAVORITES_KEY, []));
   const [historyFilter, setHistoryFilter] = useState("");
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const pinnedQueries = usePinnedQueries();
   const pinnedQuery = findPinnedQuery(pinnedQueries, connectionId, database, sql.trim());
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -159,7 +185,16 @@ export function QueryTab({ tab, connections }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastRunSql, setLastRunSql] = useState("");
   const [snippetsOpen, setSnippetsOpen] = useState(() => localStorage.getItem("mysqlui.snippetsOpen") === "1");
-  const [paramRequest, setParamRequest] = useState<{ sql: string; names: string[] } | null>(null);
+  const [paramRequest, setParamRequest] = useState<{ sql: string; names: string[]; startLine: number } | null>(null);
+  const [errorLine, setErrorLine] = useState<number | null>(null);
+  const [riskRequest, setRiskRequest] = useState<{
+    text: string;
+    startLine: number;
+    risks: SqlRisk[];
+    estimatedRows: number | null;
+    estimating: boolean;
+  } | null>(null);
+  const riskThreshold = 1000;
 
   const connection = useMemo(() => connections.find((c) => c.id === connectionId), [connections, connectionId]);
 
@@ -207,21 +242,21 @@ export function QueryTab({ tab, connections }: Props) {
   }, [tab.id]);
 
   const pushHistory = (text: string) => {
-    setHistory((prev) => {
-      const next = [text, ...prev.filter((h) => h !== text)].slice(0, 30);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      return next;
-    });
+    setHistory((prev) =>
+      pushQueryHistory(prev, {
+        sql: text,
+        connectionId,
+        connectionName: connection?.name ?? tab.connectionName,
+        database,
+      })
+    );
   };
 
   const runRaw = useCallback(
-    async (text: string) => {
+    async (text: string, startLine = 1) => {
       if (!text) return;
       if (!connectionId) {
         toast.error(t("query.connection", "Connection") + " ?");
-        return;
-      }
-      if (/^\s*(DROP|TRUNCATE)\b/i.test(text) && !window.confirm("This looks destructive. Run it anyway?")) {
         return;
       }
       const runId = `run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
@@ -229,6 +264,7 @@ export function QueryTab({ tab, connections }: Props) {
       setActiveRunId(runId);
       setRunning(true);
       setError(null);
+      setErrorLine(null);
       try {
         const res = await api.runQuery(connectionId, database, text, {
           runId,
@@ -248,7 +284,14 @@ export function QueryTab({ tab, connections }: Props) {
         setResult(null);
         setActiveResult(0);
         if (canceledRef.current) setInTransaction(false);
-        setError(canceledRef.current ? t("query.canceled", "Query canceled") : err instanceof Error ? err.message : String(err));
+        const message = canceledRef.current
+          ? t("query.canceled", "Query canceled")
+          : err instanceof Error
+            ? err.message
+            : String(err);
+        setError(message);
+        const match = message.match(/at line (\d+)/i);
+        if (match && !canceledRef.current) setErrorLine(startLine + Number(match[1]) - 1);
       } finally {
         setActiveRunId(null);
         setRunning(false);
@@ -258,18 +301,77 @@ export function QueryTab({ tab, connections }: Props) {
     [connectionId, database, timeoutSec, t]
   );
 
-  const run = useCallback(
-    (override?: string) => {
-      const text = (override ?? sql).trim();
-      if (!text) return;
-      const names = extractParams(text);
+  const assessAndRun = useCallback(
+    (text: string, startLine: number) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const names = extractParams(trimmed);
       if (names.length > 0) {
-        setParamRequest({ sql: text, names });
+        setParamRequest({ sql: trimmed, names, startLine });
         return;
       }
-      void runRaw(text);
+      const risks = assessSQLRisk(trimmed);
+      if (risks.length === 0) {
+        if (/^\s*(UPDATE|DELETE)\b/i.test(trimmed) && connectionId) {
+          api
+            .estimateQuery(connectionId, database, trimmed)
+            .then((estimate) => {
+              if (estimate.estimatedRows >= riskThreshold) {
+                setRiskRequest({
+                  text: trimmed,
+                  startLine,
+                  risks: [
+                    {
+                      level: "warning",
+                      message: `EXPLAIN estimates ${estimate.estimatedRows.toLocaleString()} affected row(s), above the ${riskThreshold.toLocaleString()} row threshold.`,
+                    },
+                  ],
+                  estimatedRows: estimate.estimatedRows,
+                  estimating: false,
+                });
+              } else {
+                void runRaw(trimmed, startLine);
+              }
+            })
+            .catch(() => void runRaw(trimmed, startLine));
+          return;
+        }
+        void runRaw(trimmed, startLine);
+        return;
+      }
+      setRiskRequest({ text: trimmed, startLine, risks, estimatedRows: null, estimating: false });
+      if (/^\s*(UPDATE|DELETE)\b/i.test(trimmed) && connectionId) {
+        setRiskRequest((prev) => (prev ? { ...prev, estimating: true } : prev));
+        api
+          .estimateQuery(connectionId, database, trimmed)
+          .then((estimate) =>
+            setRiskRequest((prev) =>
+              prev ? { ...prev, estimating: false, estimatedRows: estimate.estimatedRows } : prev
+            )
+          )
+          .catch(() =>
+            setRiskRequest((prev) => (prev ? { ...prev, estimating: false, estimatedRows: -1 } : prev))
+          );
+      }
     },
-    [sql, runRaw]
+    [connectionId, database, runRaw]
+  );
+
+  const run = useCallback(
+    (override?: string, options?: { cursor: number; all: boolean; selectionStart?: number }) => {
+      let text = sql;
+      let startLine = 1;
+      if (override) {
+        text = override;
+        startLine = lineAt(sql, options?.selectionStart ?? 0);
+      } else if (!options?.all) {
+        const range = statementAt(sql, options?.cursor ?? selectionRef.current?.start ?? 0);
+        text = range.text;
+        startLine = range.startLine;
+      }
+      assessAndRun(text, startLine);
+    },
+    [sql, assessAndRun]
   );
 
   const cancel = useCallback(async () => {
@@ -387,6 +489,26 @@ export function QueryTab({ tab, connections }: Props) {
         ? toINSERT(database, exportData.columns, exportData.rows)
         : toCSV(exportData.columns, exportData.rows);
     void navigator.clipboard.writeText(text).then(() => toast.success(t("structure.copied", "Copied")));
+  };
+
+  const copyProjected = (kind: "markdown" | "json" | "columns" | "where") => {
+    if (!currentResult) return;
+    let text = "";
+    if (kind === "columns") text = exportData.columns.map((c) => `\`${c}\``).join(", ");
+    else if (kind === "markdown") text = toMarkdown(exportData.columns, exportData.rows);
+    else if (kind === "json")
+      text = JSON.stringify(
+        exportData.rows.map((row) => Object.fromEntries(exportData.columns.map((c, i) => [c, row[i]]))),
+        null,
+        2
+      );
+    else {
+      const row = exportData.rows[0];
+      if (!row) return;
+      text = exportData.columns.map((c, i) => `\`${c}\` = ${sqlLiteralValue(row[i])}`).join("\n  AND ");
+      text = "WHERE " + text;
+    }
+    void navigator.clipboard.writeText(text).then(() => toast.success("Copied to clipboard"));
   };
 
   const exportResult = (kind: "csv" | "json" | "sql" | "xls") => {
@@ -570,9 +692,10 @@ export function QueryTab({ tab, connections }: Props) {
               </div>
               <DropdownMenuLabel>{t("query.recentQueries", "Recent queries")}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {history.filter((h) => !historyFilter || h.toLowerCase().includes(historyFilter.toLowerCase())).map((h, i) => (
-                <DropdownMenuItem key={i} onClick={() => setSql(h)} className="font-mono text-xs">
-                  <span className="max-w-[360px] truncate">{h.replace(/\s+/g, " ")}</span>
+              {history.filter((h) => !historyFilter || h.sql.toLowerCase().includes(historyFilter.toLowerCase())).map((h) => (
+                <DropdownMenuItem key={h.id} onClick={() => setSql(h.sql)} className="font-mono text-xs">
+                  <span className="max-w-[360px] truncate">{h.sql.replace(/\s+/g, " ")}</span>
+                  <span className="ml-auto pl-2 text-[10px] text-muted-foreground">{h.database || h.connectionName || ""}</span>
                 </DropdownMenuItem>
               ))}
               {favorites.length > 0 && (
@@ -588,11 +711,14 @@ export function QueryTab({ tab, connections }: Props) {
                 </>
               )}
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setHistoryDialogOpen(true)}>
+                <History /> Manage / filter history
+              </DropdownMenuItem>
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
                 onClick={() => {
+                  clearQueryHistory();
                   setHistory([]);
-                  localStorage.removeItem(HISTORY_KEY);
                 }}
               >
                 <Trash2 /> {t("query.clearHistory", "Clear history")}
@@ -639,10 +765,21 @@ export function QueryTab({ tab, connections }: Props) {
               <Square /> {t("query.cancel", "Cancel")}
             </Button>
           ) : (
-            <Button size="sm" onClick={() => void run()} disabled={running || txBusy || !connectionId}>
-              {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
-              <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => run(undefined, { cursor: selectionRef.current?.start ?? 0, all: true })}
+                disabled={running || txBusy || !connectionId}
+                title="Run all statements (Ctrl/Cmd+Shift+Enter)"
+              >
+                Run all
+              </Button>
+              <Button size="sm" onClick={() => run()} disabled={running || txBusy || !connectionId}>
+                {running ? <Loader2 className="animate-spin" /> : <Play />} {t("query.run", "Run")}
+                <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">⌘/Ctrl+↵</span>
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -669,6 +806,7 @@ export function QueryTab({ tab, connections }: Props) {
             placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
             className="h-56 shrink-0 border-b"
             initialSelection={tab.initialSelection}
+            revealLine={errorLine}
             onSelection={(selection) => {
               selectionRef.current = selection;
             }}
@@ -751,6 +889,18 @@ export function QueryTab({ tab, connections }: Props) {
                   <DropdownMenuItem onClick={() => copyResult("csv")}>
                     <Copy /> {t("query.copyCsv", "Copy as CSV")}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyProjected("markdown")}>
+                    <Copy /> Copy as Markdown
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyProjected("json")}>
+                    <Copy /> Copy as JSON
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyProjected("columns")}>
+                    <Copy /> Copy column names
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyProjected("where")}>
+                    <Copy /> Copy first row as WHERE
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -780,6 +930,11 @@ export function QueryTab({ tab, connections }: Props) {
           {error ? (
             <div className="h-full overflow-auto p-4">
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 font-mono text-[13px] text-destructive">
+                {errorLine && (
+                  <div className="mb-2 flex items-center gap-2 font-sans text-xs">
+                    <AlertTriangle className="h-3.5 w-3.5" /> Error near line {errorLine}. The editor was moved there.
+                  </div>
+                )}
                 {error}
               </div>
             </div>
@@ -835,6 +990,32 @@ export function QueryTab({ tab, connections }: Props) {
         />
       </div>
 
+      <QueryHistoryDialog
+        open={historyDialogOpen}
+        onOpenChange={setHistoryDialogOpen}
+        items={history}
+        favorites={favorites}
+        onRun={(text) => {
+          setSql(text);
+          setHistoryDialogOpen(false);
+        }}
+        onCopy={(text) => void navigator.clipboard.writeText(text).then(() => toast.success("SQL copied"))}
+        onPin={(item) => {
+          pinQuery({
+            sql: item.sql,
+            connectionId: item.connectionId ?? connectionId,
+            connectionName: item.connectionName ?? connection?.name ?? tab.connectionName,
+            database: item.database ?? database,
+          });
+          toast.success(t("query.pinned", "Pinned to sidebar"));
+        }}
+        onDelete={(id) => setHistory((prev) => removeQueryHistory(prev, id))}
+        onClear={() => {
+          clearQueryHistory();
+          setHistory([]);
+        }}
+      />
+
       <ParameterDialog
         open={paramRequest !== null}
         onOpenChange={(open) => {
@@ -845,8 +1026,24 @@ export function QueryTab({ tab, connections }: Props) {
         connectionName={connection?.name ?? tab.connectionName}
         database={database}
         onRun={(expanded) => {
+          const startLine = paramRequest?.startLine ?? 1;
           setParamRequest(null);
-          void runRaw(expanded);
+          assessAndRun(expanded, startLine);
+        }}
+      />
+
+      <RiskDialog
+        open={riskRequest !== null}
+        sql={riskRequest?.text ?? ""}
+        risks={riskRequest?.risks ?? []}
+        estimatedRows={riskRequest?.estimatedRows ?? null}
+        estimating={riskRequest?.estimating ?? false}
+        threshold={riskThreshold}
+        onCancel={() => setRiskRequest(null)}
+        onRun={() => {
+          const request = riskRequest;
+          setRiskRequest(null);
+          if (request) void runRaw(request.text, request.startLine);
         }}
       />
 

@@ -25,6 +25,8 @@ type Connection struct {
 	Database string `json:"database"`
 	SSL      string `json:"ssl,omitempty"`
 	Color    string `json:"color,omitempty"`
+	Group    string `json:"group,omitempty"`
+	Favorite bool   `json:"favorite,omitempty"`
 	ReadOnly bool   `json:"readOnly,omitempty"`
 	// HideSystemDatabases hides information_schema / performance_schema / mysql /
 	// sys from database listings for this connection.

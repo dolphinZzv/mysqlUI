@@ -50,22 +50,35 @@ func (s *Server) importCSV(w http.ResponseWriter, r *http.Request) {
 	truncate := parseBool(r.FormValue("truncate"), false)
 	nullValue := r.FormValue("nullValue")
 	delimiter := r.FormValue("delimiter")
-	if delimiter == "" {
-		delimiter = ","
+	conflict := r.FormValue("conflict")
+	mapping, err := parseMapping(r.FormValue("mapping"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxStructuredImportBytes))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	decoded, _ := decodeImportText(data)
+	if delimiter == "" || delimiter == "auto" {
+		delimiter = detectDelimiter(string(decoded))
 	}
 	delimRunes := []rune(delimiter)
 
-	reader := csv.NewReader(file)
+	reader := csv.NewReader(bytes.NewReader(decoded))
 	reader.Comma = delimRunes[0]
 	reader.FieldsPerRecord = -1
 	reader.LazyQuotes = true
 
 	ctx := r.Context()
-	columns, err := tableColumns(ctx, db, dbName, table)
+	tableCols, err := tableColumns(ctx, db, dbName, table)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	columns := tableCols
 	if hasHeader {
 		header, err := reader.Read()
 		if err != nil && err != io.EOF {
@@ -76,16 +89,13 @@ func (s *Server) importCSV(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("empty csv"))
 			return
 		}
-		cols := make([]string, len(header))
-		for i, h := range header {
-			name := strings.TrimSpace(strings.TrimPrefix(h, "\ufeff"))
-			if !validIdent(name) {
-				writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid column name %q in header", name))
-				return
-			}
-			cols[i] = name
+		columns, err = mapImportColumns(header, tableCols, mapping)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
 		}
-		columns = cols
+	} else if len(mapping) > 0 {
+		columns = mapping
 	}
 
 	if truncate {
@@ -96,6 +106,12 @@ func (s *Server) importCSV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prefix := fmt.Sprintf("INSERT INTO %s (%s) VALUES ", qualify(dbName, table), quoteColumnList(columns))
+	switch strings.ToLower(strings.TrimSpace(conflict)) {
+	case "ignore":
+		prefix = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES ", qualify(dbName, table), quoteColumnList(columns))
+	case "replace", "upsert":
+		prefix = fmt.Sprintf("REPLACE INTO %s (%s) VALUES ", qualify(dbName, table), quoteColumnList(columns))
+	}
 	batchSize := 500
 
 	tx, err := db.BeginTx(ctx, nil)

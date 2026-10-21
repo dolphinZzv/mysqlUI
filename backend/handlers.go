@@ -72,6 +72,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/import", s.importConnections)
 	mux.HandleFunc("POST /api/connections/{id}/test", s.testExistingConnection)
 	mux.HandleFunc("POST /api/connections/{id}/clone", s.cloneConnection)
+	mux.HandleFunc("PUT /api/connections/{id}/favorite", s.setConnectionFavorite)
 	mux.HandleFunc("GET /api/connections/{id}/info", s.serverInfo)
 	mux.HandleFunc("GET /api/connections/{id}/databases", s.listDatabases)
 	mux.HandleFunc("POST /api/connections/{id}/databases", s.createDatabase)
@@ -101,6 +102,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/rows/bulk-update", s.bulkUpdateRows)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/maintenance", s.tableMaintenance)
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/options", s.updateTableOptions)
+	mux.HandleFunc("POST /api/connections/{id}/query/estimate", s.estimateQueryRows)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
 	mux.HandleFunc("POST /api/connections/{id}/query/{runId}/cancel", s.cancelQueryHandler)
 	mux.HandleFunc("POST /api/connections/{id}/query/file", s.runQueryFile)
@@ -117,6 +119,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/connections/{id}/monitor/process/{pid}", s.monitorKill)
 
 	// import / backup
+	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import/preview", s.importPreview)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import", s.importCSV)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import/json", s.importJSONTable)
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/import/excel", s.importExcelTable)
@@ -162,6 +165,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
 	mux.HandleFunc("POST /api/connections/{id}/data-diff", s.dataDiff)
 	mux.HandleFunc("POST /api/cross-diff", s.crossDiff)
+	mux.HandleFunc("POST /api/table-copy", s.copyTableAcrossConnections)
 
 	// schema versions (snapshots / 封板)
 	mux.HandleFunc("GET /api/connections/{id}/schema-versions", s.listSchemaVersions)
@@ -182,6 +186,8 @@ type connectionInput struct {
 	Database            string     `json:"database"`
 	SSL                 string     `json:"ssl"`
 	Color               string     `json:"color"`
+	Group               string     `json:"group"`
+	Favorite            bool       `json:"favorite"`
 	ReadOnly            bool       `json:"readOnly"`
 	HideSystemDatabases bool       `json:"hideSystemDatabases"`
 	SSH                 *SSHConfig `json:"ssh"`
@@ -200,6 +206,8 @@ func (in connectionInput) toConnection() Connection {
 		Database:            in.Database,
 		SSL:                 in.SSL,
 		Color:               in.Color,
+		Group:               in.Group,
+		Favorite:            in.Favorite,
 		ReadOnly:            in.ReadOnly,
 		HideSystemDatabases: in.HideSystemDatabases,
 		SSH:                 in.SSH,
@@ -1603,4 +1611,25 @@ func parseIntDefault(s string, def int) int {
 		return def
 	}
 	return n
+}
+
+func (s *Server) setConnectionFavorite(w http.ResponseWriter, r *http.Request) {
+	entry, ok := s.entry(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Favorite bool `json:"favorite"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	info := entry.Info
+	info.Favorite = in.Favorite
+	if _, err := s.store.Update(info.ID, info); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "favorite": in.Favorite})
 }

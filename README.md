@@ -28,14 +28,24 @@ shipped as a **single binary** with the UI embedded.
   transaction. Columns can be resized, hidden, frozen and are remembered per
   connection + database + table. Shift-click / drag selects a rectangular cell
   range: copy it as TSV, paste TSV/CSV with a preview, and navigate with
-  arrows/Tab/Enter (Esc clears). Cell edits collect in a pending list, can be
-  previewed as UPDATE statements, then committed in one transaction or rolled
-  back as a batch.
+  arrows/Tab/Enter (Esc clears). A quick-filter row under the headers supports
+  multi-column filtering, Shift-click on headers adds multi-column sorting, and
+  both filter and sort state persist per table (and in the URL). Cell edits
+  collect in a pending list, can be previewed as UPDATE statements, then
+  committed in one transaction or rolled back as a batch. Open a row detail
+  drawer for a vertical view of every field, including JSON/BLOB preview, copy,
+  edit and foreign-key jumps.
+- **Result tools** — hide result columns, select rows and export only the selected
+  rows/visible columns, or copy as CSV/Markdown/JSON/INSERT/column list/first-row
+  WHERE clause.
 - **Charts** — turn any query result into a bar / line / area / pie chart with a
   dependency-free SVG renderer, choosing the X axis, value fields and
   count / sum / avg / min / max aggregation.
 - **Execution plan** — run `EXPLAIN FORMAT=JSON` for the current query and inspect
   the cost and access path per table, with the raw plan as highlighted JSON.
+- **Safe execution** — execute the statement under the cursor, jump to MySQL
+  error lines, and confirm risky `UPDATE/DELETE` (missing WHERE or EXPLAIN row
+  estimate above the threshold), `DROP`, `TRUNCATE` and destructive `ALTER`.
 - **Structure viewer** — columns, indexes, cardinality and the full `CREATE TABLE`.
 - **Table designer** — create tables, add/modify/drop columns, add/drop indexes,
   rename and drop tables.
@@ -49,13 +59,17 @@ shipped as a **single binary** with the UI embedded.
   also be imported and executed directly from the editor toolbar, and queries
   can be pinned to the sidebar for one-click reuse.
 - **Export** — download a table as CSV / JSON / SQL, or an entire database as SQL.
-- **Import / restore** — load CSV into a table (with header mapping, truncate,
-  delimiter and NULL marker) or run/restore `.sql` files (streaming parser that
-  understands comments, quotes and `DELIMITER` for routines).
+- **Import / restore** — load CSV/Excel into a table with a preview of the first
+  rows, automatic delimiter/encoding detection (UTF-8, BOM, GB18030), editable
+  source→target column mapping, duplicate-key strategy (fail / `INSERT IGNORE` /
+  `REPLACE INTO`), truncate and NULL marker. SQL files are restored with a
+  streaming parser that understands comments, quotes and `DELIMITER`.
 - **Data tools** — paste rows from Excel/Sheets, duplicate rows, copy rows as
   INSERT/UPDATE, compare table data across databases, and import JSON/Excel.
 - **Cross-connection diff** — compare schema and table data between two saved
   connections, preview the sync SQL and execute explicitly against the target.
+- **Cross-connection table copy** — copy a table's structure and data to another
+  saved connection, with optional drop-target and row-copy controls.
 - **Table maintenance** — truncate, optimize, analyze, check, repair and edit
   table options (engine, charset, collation, comment).
 - **SQL snippets** — save reusable SQL fragments in a right-hand panel and
@@ -79,7 +93,9 @@ shipped as a **single binary** with the UI embedded.
   atomically replaces the binary. Automatic updates check every 10 minutes by
   default and can be disabled or re-scheduled from the **… → Update** dialog.
 - **Server monitor** — overview metrics, live process list with kill / kill query,
-  and searchable status/variable tables.
+  searchable status/variable tables, configurable auto-refresh interval with a
+  pause switch, and quick process views for running queries, locks/waits and
+  queries running ≥5s.
 - **Users & privileges** — list users, `SHOW GRANTS`, create/alter/drop users,
   change passwords, copy users (password hash + grants), and grant/revoke
   privileges with a validated privilege allow-list. The privilege matrix shows
@@ -88,11 +104,17 @@ shipped as a **single binary** with the UI embedded.
 - **Routines & triggers** — browse procedures, functions, triggers and events,
   view their `SHOW CREATE` definition and drop them.
 - **SQL editor** — syntax highlighting and schema-aware autocomplete
-  (`Ctrl/⌘+Enter` to run, `Ctrl+Space` to complete), query history and favorites.
+  (`Ctrl/⌘+Enter` runs the cursor statement, `Ctrl/⌘+Shift+Enter` runs all,
+  `Ctrl+Space` completes), query history and favorites. History is searchable,
+  filterable by connection/database, and supports rerun/copy/pin/delete.
 - **Query builder** — point-and-click column/condition/order builder.
-- **Connection tools** — clone a profile, batch-test every saved connection, and
+- **Command palette** — `Ctrl/⌘+Shift+P` searches commands, open tabs and
+  connections; keyboard shortcuts cover tab switching/closing, new query,
+  sidebar toggle and editor focus.
+- **Connection tools** — clone a profile, batch-test every saved connection,
   export/import connection profiles (passwords optional; imports validate and
-  rename name conflicts instead of overwriting).
+  rename name conflicts instead of overwriting), organize connections into
+  groups/favorites and paste a `mysql://user:pass@host/db` URL to fill the form.
 - **Global search** — find tables and columns across all databases (`Ctrl+K`).
 - **ER diagram** — visualize tables and foreign-key relationships.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
@@ -105,6 +127,8 @@ shipped as a **single binary** with the UI embedded.
   and jump along foreign keys.
 - **Capacity statistics** — per-table rows/data/index size/engine/collation/time
   and database totals, degrading gracefully when privileges are missing.
+- **DDL preview** — create-table, column, index and table-option changes show the
+  generated DDL and warnings before execution.
 - **Favorites** — star tables and databases; a Favorites section in the sidebar
   persists across reloads.
 - **UI** — multi-tab workspace with session restore, tab rename/duplicate/close
@@ -131,7 +155,7 @@ irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 Options (environment variables):
 
 ```bash
-VERSION=v1.0.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
+VERSION=v1.1.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 ```
 
 Then run:
@@ -286,7 +310,7 @@ The release checksum is verified before the binary is replaced:
 ```bash
 mysqlui update                 # install the latest release
 mysqlui update --check         # only check, do not install
-mysqlui update --version v1.0.0
+mysqlui update --version v1.1.0
 mysqlui update --force         # reinstall even when already current
 ```
 
@@ -395,8 +419,8 @@ GitHub Release with the binaries and `checksums.txt`.
 To cut a release, push a version tag:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 You can also trigger it manually from **Actions → Release → Run workflow**.
@@ -412,6 +436,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `POST` | `/api/connections/{id}/test` | test a saved connection |
 | `POST` | `/api/connections/test-all` | test every saved connection |
 | `POST` | `/api/connections/{id}/clone` | clone a connection profile |
+| `PUT` | `/api/connections/{id}/favorite` | favorite / unfavorite a connection |
 | `GET/POST` | `/api/connections/export`, `/api/connections/import` | move profiles (passwords optional) |
 | `GET` | `/api/connections/{id}/info` | server version/host info |
 | `GET/POST` | `/api/connections/{id}/databases` | list / create databases |
@@ -425,6 +450,8 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `POST/PUT/DELETE` | `…/tables/{table}/rows` | insert / update / delete rows |
 | `POST` | `…/tables/{table}/rows/bulk-delete` | delete several rows by primary key in one transaction |
 | `POST` | `…/tables/{table}/rows/bulk-update` | apply a batch of cell edits in one transaction |
+| `POST` | `…/tables/{table}/import/preview` | parse CSV/Excel and return mapping preview |
+| `POST` | `/api/table-copy` | copy a table between connections |
 | `POST/PUT/DELETE` | `…/tables/{table}/columns[/{col}]` | add / modify / drop column |
 | `POST/DELETE` | `…/tables/{table}/indexes[/{idx}]` | add / drop index |
 | `POST` | `…/tables/{table}/copy` | copy table structure/data to another database |
@@ -433,6 +460,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET` | `…/databases/{db}/export?format=sql` | export database |
 | `POST` | `/api/connections/{id}/query` | run arbitrary SQL (supports `runId`, `sessionId`, `timeoutSec`) |
 | `POST` | `/api/connections/{id}/query/{runId}/cancel` | cancel a running query |
+| `POST` | `/api/connections/{id}/query/estimate` | EXPLAIN row estimate for risky DML |
 | `POST` | `…/databases/{db}/views` | create or replace a view |
 | `POST` | `…/databases/{db}/objects` | create/replace procedure, function, trigger or event |
 | `POST` | `/api/connections/{id}/query/file` | execute an uploaded `.sql` script |

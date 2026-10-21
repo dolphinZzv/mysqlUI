@@ -20,6 +20,8 @@ export interface Connection {
   database: string;
   ssl?: string;
   color?: string;
+  group?: string;
+  favorite?: boolean;
   readOnly?: boolean;
   hideSystemDatabases?: boolean;
   ssh?: SSHConfig;
@@ -34,6 +36,8 @@ export interface ConnectionInput {
   database: string;
   ssl?: string;
   color?: string;
+  group?: string;
+  favorite?: boolean;
   readOnly?: boolean;
   hideSystemDatabases?: boolean;
   ssh?: SSHConfig;
@@ -503,4 +507,24 @@ export interface PrivilegeMatrix {
   users: PrivilegeMatrixUser[];
   databases: string[];
   flags: string[];
+}
+
+export interface ImportPreview {
+  sourceColumns: string[];
+  targetColumns: string[];
+  rows: string[][];
+  detectedDelimiter: string;
+  encoding: string;
+}
+
+export interface QueryEstimate {
+  estimatedRows: number;
+  isDML: boolean;
+  error?: string;
+}
+
+export interface CrossCopyResult {
+  ok: boolean;
+  target: string;
+  rowsCopied: number;
 }

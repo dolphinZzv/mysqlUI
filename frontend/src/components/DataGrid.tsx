@@ -48,11 +48,14 @@ interface Props {
   tableName?: string;
   orderBy?: string;
   storageKey?: string;
-  onSort?: (column: string) => void;
+  quickFilters?: Record<string, string>;
+  onQuickFiltersChange?: (next: Record<string, string>) => void;
+  onSort?: (column: string, additive?: boolean) => void;
   onUpdateCell: (rowIndex: number, column: string, value: unknown) => Promise<void>;
   onDeleteRow: (rowIndex: number) => void;
   onDuplicateRow?: (rowIndex: number) => void;
   onViewCell?: (rowIndex: number, column: string) => void;
+  onRowDetail?: (rowIndex: number) => void;
   onJump?: (foreignKey: ForeignKeyInfo, value: unknown) => void;
   onPasteRange?: (startRow: number, startColumn: number, grid: string[][]) => void;
   /** Row indices (page-local) that are currently selected. */
@@ -167,11 +170,14 @@ export function DataGrid({
   tableName = "table",
   orderBy,
   storageKey = "",
+  quickFilters = {},
+  onQuickFiltersChange,
   onSort,
   onUpdateCell,
   onDeleteRow,
   onDuplicateRow,
   onViewCell,
+  onRowDetail,
   onJump,
   onPasteRange,
   selected,
@@ -181,6 +187,7 @@ export function DataGrid({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState<Set<string>>(new Set());
   const [prefs, setPrefs] = useState<GridPrefs>(() => loadPrefs(storageKey));
+  const [quickDraft, setQuickDraft] = useState<Record<string, string>>(quickFilters);
   const [range, setRange] = useState<{ anchor: CellPos; focus: CellPos } | null>(null);
   const [draggingRange, setDraggingRange] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -192,6 +199,10 @@ export function DataGrid({
     setPrefs(loadPrefs(storageKey));
     setRange(null);
   }, [storageKey]);
+
+  useEffect(() => {
+    setQuickDraft(quickFilters);
+  }, [quickFilters]);
 
   const savePrefs = useCallback(
     (next: GridPrefs) => {
@@ -581,6 +592,23 @@ export function DataGrid({
   };
 
   const box = range ? normalizeRange(range.anchor, range.focus) : null;
+  const sortEntries = (orderBy ?? "")
+    .split(",")
+    .map((raw) => raw.trim())
+    .filter(Boolean)
+    .map((raw) => ({
+      column: raw.startsWith("-") || raw.startsWith("+") ? raw.slice(1) : raw,
+      direction: raw.startsWith("-") ? "desc" : "asc",
+    }));
+
+  const applyQuickFilters = () => {
+    if (!onQuickFiltersChange) return;
+    const next: Record<string, string> = {};
+    for (const [column, value] of Object.entries(quickDraft)) {
+      if (value.trim() !== "") next[column] = value;
+    }
+    onQuickFiltersChange(next);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -669,14 +697,16 @@ export function DataGrid({
                 const meta = metaByName.get(col.name);
                 const isPk = (primaryKey ?? []).includes(col.name);
                 const isFk = fkByName.has(col.name);
-                const sortDir = orderBy === col.name ? "asc" : orderBy === `-${col.name}` ? "desc" : null;
+                const sortEntry = sortEntries.find((entry) => entry.column === col.name);
+                const sortDir = sortEntry?.direction ?? null;
+                const sortIndex = sortEntries.length > 1 ? sortEntries.findIndex((entry) => entry.column === col.name) + 1 : 0;
                 const frozen = frozenSet.has(col.name);
                 const width = widthOf(col.name);
                 return (
                   <ContextMenu key={col.name}>
                     <ContextMenuTrigger asChild>
                       <th
-                        onClick={() => onSort?.(col.name)}
+                        onClick={(event) => onSort?.(col.name, event.shiftKey)}
                         style={{
                           width,
                           minWidth: width,
@@ -700,6 +730,9 @@ export function DataGrid({
                           ) : onSort ? (
                             <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-50" />
                           ) : null}
+                          {sortIndex > 0 && (
+                            <span className="rounded bg-primary/15 px-1 text-[9px] tabular-nums text-primary">{sortIndex}</span>
+                          )}
                           {meta?.key === "UNI" && !isPk && (
                             <Badge variant="secondary" className="px-1 py-0 text-[9px]">
                               UQ
@@ -738,6 +771,68 @@ export function DataGrid({
               })}
               <th className="sticky right-0 z-30 w-10 border-b border-l bg-card px-2 py-1.5" />
             </tr>
+            {onQuickFiltersChange && (
+              <tr>
+                {selectable && <th className="sticky left-0 z-30 border-b border-r bg-card px-1 py-1" />}
+                <th
+                  className={cn(
+                    "sticky z-30 border-b border-r bg-card px-1 py-1",
+                    selectable ? "left-8" : "left-0"
+                  )}
+                >
+                  <span className="block text-center text-[9px] text-muted-foreground">filter</span>
+                </th>
+                {visible.map((col) => (
+                  <th
+                    key={`filter:${col.name}`}
+                    style={{
+                      width: widthOf(col.name),
+                      minWidth: widthOf(col.name),
+                      maxWidth: widthOf(col.name),
+                      ...(frozenSet.has(col.name)
+                        ? { position: "sticky", left: frozenLeft.get(col.name) ?? 0 }
+                        : {}),
+                    }}
+                    className={cn(
+                      "border-b border-r bg-card px-1 py-1",
+                      frozenSet.has(col.name) && "z-30"
+                    )}
+                  >
+                    <input
+                      className="h-6 w-full rounded border bg-background px-1.5 text-[11px] outline-none focus:border-primary"
+                      placeholder="contains…"
+                      value={quickDraft[col.name] ?? ""}
+                      onChange={(e) => setQuickDraft((prev) => ({ ...prev, [col.name]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          applyQuickFilters();
+                        }
+                        if (e.key === "Escape") {
+                          setQuickDraft({});
+                          onQuickFiltersChange({});
+                        }
+                      }}
+                      onBlur={applyQuickFilters}
+                    />
+                  </th>
+                ))}
+                <th className="sticky right-0 z-30 border-b border-l bg-card px-1 py-1">
+                  {Object.values(quickFilters).some(Boolean) && (
+                    <button
+                      className="rounded px-1 text-[10px] text-muted-foreground hover:text-destructive"
+                      title="Clear quick filters"
+                      onClick={() => {
+                        setQuickDraft({});
+                        onQuickFiltersChange({});
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </th>
+              </tr>
+            )}
           </thead>
           <tbody
             onMouseMove={(event) => {
@@ -898,6 +993,11 @@ export function DataGrid({
                           <ContextMenuItem onClick={() => onViewCell?.(r, colName)}>
                             <Eye /> View content
                           </ContextMenuItem>
+                          {onRowDetail && (
+                            <ContextMenuItem onClick={() => onRowDetail(r)}>
+                              <Eye /> Row details
+                            </ContextMenuItem>
+                          )}
                           {fk && cell !== null && cell !== undefined && (
                             <ContextMenuItem onClick={() => onJump?.(fk, cell)}>
                               <Link2 /> Go to {fk.refTable}.{fk.refColumn}
@@ -928,13 +1028,24 @@ export function DataGrid({
                       isSelected && "bg-primary/10 group-hover:bg-primary/15"
                     )}
                   >
-                    <button
-                      className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                      title="Delete row"
-                      onClick={() => onDeleteRow(r)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="flex items-center">
+                      {onRowDetail && (
+                        <button
+                          className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+                          title="Row details"
+                          onClick={() => onRowDetail(r)}
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      <button
+                        className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                        title="Delete row"
+                        onClick={() => onDeleteRow(r)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

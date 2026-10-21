@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Check, Loader2, Plus, Table2, X } from "lucide-react";
 import type { ColumnDefInput, CreateTableRequest } from "@/lib/types";
 import { COLUMN_TYPES, defaultNewTableColumns, emptyColumn } from "@/lib/schema";
+import { createTableSQL } from "@/lib/ddl";
+import { DDLPreviewDialog } from "@/components/DDLPreviewDialog";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,6 +68,7 @@ export function TableDesignerDialog({ open, onOpenChange, onSubmit }: Props) {
   const [indexes, setIndexes] = useState<IndexRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [preview, setPreview] = useState<{ sql: string; request: CreateTableRequest } | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -78,6 +81,7 @@ export function TableDesignerDialog({ open, onOpenChange, onSubmit }: Props) {
       setIndexes([]);
       setError(null);
       setSaving(false);
+      setPreview(null);
     }
   }, [open]);
 
@@ -118,10 +122,17 @@ export function TableDesignerDialog({ open, onOpenChange, onSubmit }: Props) {
             .filter(Boolean),
         })),
     };
+    setError(null);
+    setPreview({ sql: createTableSQL(request), request });
+  };
+
+  const execute = async () => {
+    if (!preview) return;
     setSaving(true);
     setError(null);
     try {
-      await onSubmit(request);
+      await onSubmit(preview.request);
+      setPreview(null);
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -358,10 +369,24 @@ export function TableDesignerDialog({ open, onOpenChange, onSubmit }: Props) {
             Cancel
           </Button>
           <Button onClick={submit} disabled={saving} className={cn("gap-2")}>
-            {saving ? <Loader2 className="animate-spin" /> : <Check />} Create table
+            {saving ? <Loader2 className="animate-spin" /> : <Check />} Preview & create table
           </Button>
         </DialogFooter>
       </DialogContent>
+      <DDLPreviewDialog
+        open={preview !== null}
+        onOpenChange={(open) => !open && setPreview(null)}
+        title="Create table"
+        sql={preview?.sql ?? ""}
+        warnings={
+          preview && !preview.request.columns.some((column) => column.primaryKey)
+            ? ["The table has no primary key. Rows may not be editable in the data grid."]
+            : []
+        }
+        busy={saving}
+        confirmLabel="Create table"
+        onConfirm={() => void execute()}
+      />
     </Dialog>
   );
 }

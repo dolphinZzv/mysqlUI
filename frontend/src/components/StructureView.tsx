@@ -24,6 +24,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CellValue } from "@/components/CellValue";
 import { ColumnDialog } from "@/components/ColumnDialog";
+import { DDLPreviewDialog } from "@/components/DDLPreviewDialog";
+import { addIndexSQL, tableOptionsSQL } from "@/lib/ddl";
 import { ViewDialog } from "@/components/ViewDialog";
 import { ForeignKeyDialog } from "@/components/ForeignKeyDialog";
 import {
@@ -114,6 +116,7 @@ export function StructureView({
   const [fkOpen, setFkOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [options, setOptions] = useState({ engine: "", charset: "", collation: "", comment: "" });
+  const [ddlPreview, setDdlPreview] = useState<{ sql: string; title: string; warnings: string[]; run: () => Promise<void> } | null>(null);
 
   const indexes = useMemo(() => {
     const map = new Map<string, { name: string; unique: boolean; type: string; columns: string[]; cardinality: number | null }>();
@@ -232,21 +235,29 @@ export function StructureView({
       toast.error("Provide at least one column");
       return;
     }
-    setBusy(true);
-    try {
-      await api.addIndex(connectionId, database, table, {
-        name: indexDialog.name.trim(),
-        unique: indexDialog.unique,
-        columns,
-      });
-      toast.success("Index created");
-      setIndexOpen(false);
-      onRefresh();
-    } catch (err) {
-      toast.error("Failed to create index", { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
+    setDdlPreview({
+      title: "Create index",
+      sql: addIndexSQL(table, indexDialog.name.trim(), columns, indexDialog.unique),
+      warnings: [],
+      run: async () => {
+        setBusy(true);
+        try {
+          await api.addIndex(connectionId, database, table, {
+            name: indexDialog.name.trim(),
+            unique: indexDialog.unique,
+            columns,
+          });
+          toast.success("Index created");
+          setIndexOpen(false);
+          setDdlPreview(null);
+          onRefresh();
+        } catch (err) {
+          toast.error("Failed to create index", { description: err instanceof Error ? err.message : String(err) });
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   };
 
   const submitRename = async () => {
@@ -292,17 +303,30 @@ export function StructureView({
   };
 
   const saveOptions = async () => {
-    setBusy(true);
-    try {
-      await api.updateTableOptions(connectionId, database, table, options);
-      toast.success("Table options updated");
-      setOptionsOpen(false);
-      onRefresh();
-    } catch (err) {
-      toast.error("Failed to update table options", { description: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
+    const sql = tableOptionsSQL(table, options);
+    if (!sql) {
+      toast.error("Choose at least one table option");
+      return;
     }
+    setDdlPreview({
+      title: "Update table options",
+      sql,
+      warnings: options.engine.trim() ? ["Changing the storage engine can rebuild the table and may lock writes temporarily."] : [],
+      run: async () => {
+        setBusy(true);
+        try {
+          await api.updateTableOptions(connectionId, database, table, options);
+          toast.success("Table options updated");
+          setOptionsOpen(false);
+          setDdlPreview(null);
+          onRefresh();
+        } catch (err) {
+          toast.error("Failed to update table options", { description: err instanceof Error ? err.message : String(err) });
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   };
 
   const existingNames = structure.columns.map((c) => c.name);
@@ -623,6 +647,7 @@ export function StructureView({
         mode={columnDialog.mode}
         column={columnDialog.column}
         existingNames={existingNames}
+        tableName={table}
         onSubmit={submitColumn}
       />
 
@@ -711,6 +736,16 @@ export function StructureView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DDLPreviewDialog
+        open={ddlPreview !== null}
+        onOpenChange={(open) => !open && setDdlPreview(null)}
+        title={ddlPreview?.title}
+        sql={ddlPreview?.sql ?? ""}
+        warnings={ddlPreview?.warnings ?? []}
+        busy={busy}
+        onConfirm={() => void ddlPreview?.run()}
+      />
 
       <AlertDialog open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
         <AlertDialogContent>

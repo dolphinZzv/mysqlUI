@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   ChevronLeft,
@@ -52,6 +52,7 @@ import { PasteRowsDialog } from "@/components/PasteRowsDialog";
 import { DataDiffDialog } from "@/components/DataDiffDialog";
 import { PasteCellsDialog, type PasteCellChange } from "@/components/PasteCellsDialog";
 import { StatsDialog } from "@/components/StatsDialog";
+import { RowDetailDrawer } from "@/components/RowDetailDrawer";
 import { useFavorites } from "@/lib/favorites";
 import {
   Dialog,
@@ -70,6 +71,55 @@ interface Props {
 }
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000];
+
+interface TableViewState {
+  orderBy: string;
+  filters: FilterCondition[];
+  quickFilters: Record<string, string>;
+  pageSize: number;
+}
+
+const tableStateKey = (tab: TableTabRef) =>
+  `mysqlui.tableView.${tab.connectionId}:${tab.database}:${tab.table}`;
+
+type TableTabRef = { connectionId: string; database: string; table: string };
+
+function readTableViewState(tab: TableTabRef): TableViewState {
+  const fallback: TableViewState = { orderBy: "", filters: [], quickFilters: {}, pageSize: 100 };
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const raw = localStorage.getItem(tableStateKey(tab));
+    const stored = raw ? (JSON.parse(raw) as Partial<TableViewState>) : {};
+    let filters = Array.isArray(stored.filters) ? stored.filters : [];
+    let quickFilters = stored.quickFilters && typeof stored.quickFilters === "object" ? stored.quickFilters : {};
+    let orderBy = typeof stored.orderBy === "string" ? stored.orderBy : "";
+    if (params.get("orderBy")) orderBy = params.get("orderBy") ?? "";
+    if (params.get("filters")) {
+      try {
+        const parsed = JSON.parse(params.get("filters") ?? "[]") as FilterCondition[];
+        if (Array.isArray(parsed)) filters = parsed;
+      } catch {
+        /* ignore malformed URL */
+      }
+    }
+    if (params.get("quickFilters")) {
+      try {
+        const parsed = JSON.parse(params.get("quickFilters") ?? "{}") as Record<string, string>;
+        if (parsed && typeof parsed === "object") quickFilters = parsed;
+      } catch {
+        /* ignore malformed URL */
+      }
+    }
+    return {
+      orderBy,
+      filters,
+      quickFilters,
+      pageSize: [50, 100, 200, 500, 1000].includes(Number(stored.pageSize)) ? Number(stored.pageSize) : 100,
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 interface PendingEdit {
   rowIndex: number;
@@ -90,9 +140,11 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [structure, setStructure] = useState<TableStructure | null>(null);
   const [data, setData] = useState<TableData | null>(null);
   const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(100);
-  const [orderBy, setOrderBy] = useState("");
-  const [filters, setFilters] = useState<FilterCondition[]>([]);
+  const initialState = readTableViewState(tab);
+  const [pageSize, setPageSize] = useState(initialState.pageSize);
+  const [orderBy, setOrderBy] = useState(initialState.orderBy);
+  const [filters, setFilters] = useState<FilterCondition[]>(initialState.filters);
+  const [quickFilters, setQuickFilters] = useState<Record<string, string>>(initialState.quickFilters);
   const [search, setSearch] = useState("");
   const [searchDraft, setSearchDraft] = useState("");
   const [loading, setLoading] = useState(false);
@@ -110,6 +162,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [commitBusy, setCommitBusy] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [rowDetail, setRowDetail] = useState<number | null>(null);
   const [pasteCells, setPasteCells] = useState<{
     open: boolean;
     changes: PasteCellChange[];
@@ -130,6 +183,16 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     }
   }, [tab.connectionId, tab.database, tab.table]);
 
+  const combinedFilters = useMemo<FilterCondition[]>(
+    () => [
+      ...filters,
+      ...Object.entries(quickFilters)
+        .filter(([, value]) => value.trim() !== "")
+        .map(([column, value]) => ({ column, op: "contains", value })),
+    ],
+    [filters, quickFilters]
+  );
+
   const loadData = useCallback(
     async (p: number, size: number) => {
       setLoading(true);
@@ -143,7 +206,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           size,
           p * size,
           orderBy,
-          filters,
+          combinedFilters,
           search
         );
         setData({ ...res, primaryKey: res.primaryKey ?? [] });
@@ -154,15 +217,18 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         setLoading(false);
       }
     },
-    [tab.connectionId, tab.database, tab.table, orderBy, filters, search]
+    [tab.connectionId, tab.database, tab.table, orderBy, combinedFilters, search]
   );
 
   useEffect(() => {
+    const stored = readTableViewState(tab);
     setPage(0);
     setData(null);
     setStructure(null);
-    setOrderBy("");
-    setFilters([]);
+    setOrderBy(stored.orderBy);
+    setFilters(stored.filters);
+    setQuickFilters(stored.quickFilters);
+    setPageSize(stored.pageSize);
     setSearch("");
     setSearchDraft("");
     void loadStructure();
@@ -171,6 +237,24 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   useEffect(() => {
     void loadData(page, pageSize);
   }, [page, pageSize, loadData]);
+
+  useEffect(() => {
+    const state: TableViewState = { orderBy, filters, quickFilters, pageSize };
+    try {
+      localStorage.setItem(tableStateKey(tab), JSON.stringify(state));
+    } catch {
+      /* ignore */
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (orderBy) params.set("orderBy", orderBy);
+    else params.delete("orderBy");
+    if (filters.length) params.set("filters", JSON.stringify(filters));
+    else params.delete("filters");
+    if (Object.keys(quickFilters).length) params.set("quickFilters", JSON.stringify(quickFilters));
+    else params.delete("quickFilters");
+    const query = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (query ? `?${query}` : ""));
+  }, [tab, orderBy, filters, quickFilters, pageSize]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -188,8 +272,36 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const start = total === 0 ? 0 : page * pageSize + 1;
   const end = Math.min((page + 1) * pageSize, total);
 
-  const toggleSort = (column: string) => {
-    setOrderBy((prev) => (prev === column ? `-${column}` : prev === `-${column}` ? "" : column));
+  const toggleSort = (column: string, additive = false) => {
+    const entries = orderBy
+      .split(",")
+      .map((raw) => raw.trim())
+      .filter(Boolean)
+      .map((raw) => ({
+        column: raw.startsWith("-") || raw.startsWith("+") ? raw.slice(1) : raw,
+        desc: raw.startsWith("-"),
+      }));
+    const index = entries.findIndex((entry) => entry.column === column);
+    let next = entries;
+    if (index >= 0) {
+      const current = entries[index];
+      if (additive) {
+        if (!current.desc) {
+          next = entries.map((entry, i) => (i === index ? { ...entry, desc: true } : entry));
+        } else {
+          next = entries.filter((_, i) => i !== index);
+        }
+      } else if (!current.desc) {
+        next = [{ column, desc: true }];
+      } else {
+        next = [];
+      }
+    } else if (additive) {
+      next = [...entries, { column, desc: false }];
+    } else {
+      next = [{ column, desc: false }];
+    }
+    setOrderBy(next.map((entry) => (entry.desc ? `-${entry.column}` : entry.column)).join(","));
     setPage(0);
   };
 
@@ -497,7 +609,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             database={tab.database}
             table={tab.table}
             orderBy={orderBy || undefined}
-            filters={filters}
+            filters={combinedFilters}
           />
 
           <div className="ml-auto flex items-center gap-2">
@@ -571,10 +683,16 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             storageKey={`${tab.connectionId}:${tab.database}:${tab.table}`}
             orderBy={orderBy}
             onSort={toggleSort}
+            quickFilters={quickFilters}
+            onQuickFiltersChange={(next) => {
+              setQuickFilters(next);
+              setPage(0);
+            }}
             onUpdateCell={handleUpdateCell}
             onDeleteRow={(r) => setDeleteTarget(r)}
             onDuplicateRow={(r) => { setDuplicateRow(r); setAddOpen(true); }}
             onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
+            onRowDetail={(r) => setRowDetail(r)}
             onJump={(fk, value) => onOpenRef?.(fk, value)}
             onPasteRange={handlePasteRange}
             selected={selected}
@@ -659,6 +777,25 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           }}
         />
       )}
+      <RowDetailDrawer
+        open={rowDetail !== null && Boolean(data)}
+        onOpenChange={(open) => !open && setRowDetail(null)}
+        row={rowDetail !== null ? data?.rows[rowDetail] ?? null : null}
+        rowIndex={rowDetail ?? 0}
+        columns={data?.columns ?? []}
+        columnsMeta={columnsMeta}
+        foreignKeys={structure?.foreignKeys ?? []}
+        onUpdateCell={handleUpdateCell}
+        onViewCell={(r, column) => {
+          setRowDetail(null);
+          setCellViewer({ open: true, rowIndex: r, column });
+        }}
+        onJump={(fk, value) => {
+          setRowDetail(null);
+          onOpenRef?.(fk, value);
+        }}
+      />
+
       <StatsDialog
         open={statsOpen}
         onOpenChange={setStatsOpen}

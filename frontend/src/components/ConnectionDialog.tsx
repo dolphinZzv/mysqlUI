@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Network, PlugZap, Save, Server, ShieldCheck, EyeOff } from "lucide-react";
+import { Link2, Loader2, Network, PlugZap, Save, Server, ShieldCheck, EyeOff } from "lucide-react";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import type { Connection, ConnectionInput, SSHConfig } from "@/lib/types";
+import { applyParsedUrl, parseConnectionUrl } from "@/lib/connectionUrl";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -52,6 +53,8 @@ const emptyForm: ConnectionInput = {
   password: "",
   database: "",
   ssl: "disabled",
+  group: "",
+  favorite: false,
   readOnly: false,
   hideSystemDatabases: false,
   ssh: { ...defaultSSH },
@@ -63,6 +66,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [quickUrl, setQuickUrl] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -79,6 +83,8 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
       password: c.password,
       database: c.database || "",
       ssl: c.ssl || "disabled",
+      group: c.group || "",
+      favorite: c.favorite ?? false,
       readOnly: c.readOnly ?? false,
       hideSystemDatabases: c.hideSystemDatabases ?? false,
       ssh: { ...defaultSSH, ...(c.ssh || {}) },
@@ -156,14 +162,54 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
         </DialogHeader>
 
         <div className="grid gap-4 py-1">
-          <div className="grid gap-2">
-            <Label htmlFor="name">Connection name</Label>
+          {!connection && (
+            <div className="grid gap-1.5 rounded-md border bg-muted/20 p-2">
+              <Label className="text-xs">Quick connect URL</Label>
+              <div className="flex gap-1.5">
+                <Input
+                  className="h-8 font-mono text-xs"
+                  placeholder="mysql://user:password@host:3306/database"
+                  value={quickUrl}
+                  onChange={(e) => setQuickUrl(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const parsed = parseConnectionUrl(quickUrl);
+                    if (!parsed) {
+                      toast.error("Invalid MySQL URL");
+                      return;
+                    }
+                    setForm((current) => applyParsedUrl(current, parsed, quickUrl));
+                    setQuickUrl("");
+                    toast.success("Connection fields filled from URL");
+                  }}
+                >
+                  <Link2 /> Parse
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-2">
+              <Label htmlFor="name">Connection name</Label>
             <Input
               id="name"
               placeholder="My production db"
               value={form.name}
               onChange={(e) => set("name", e.target.value)}
             />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="group">Group / folder</Label>
+            <Input
+              id="group"
+              placeholder="Production, Staging…"
+              value={form.group ?? ""}
+              onChange={(e) => set("group", e.target.value)}
+            />
+          </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

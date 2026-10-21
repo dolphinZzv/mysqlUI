@@ -8,13 +8,14 @@ export interface SqlSchema {
 interface Props {
   value: string;
   onChange: (value: string) => void;
-  onRun?: (selected?: string) => void;
+  onRun?: (selected?: string, options?: { cursor: number; all: boolean; selectionStart?: number }) => void;
   schema?: SqlSchema;
   placeholder?: string;
   className?: string;
   minHeight?: number;
   initialSelection?: { start: number; end: number };
   onSelection?: (selection: { start: number; end: number }) => void;
+  revealLine?: number | null;
 }
 
 const KEYWORDS = [
@@ -85,7 +86,7 @@ interface Suggestion {
   detail?: string;
 }
 
-export function SqlEditor({ value, onChange, onRun, schema, placeholder, className, minHeight = 180, initialSelection, onSelection }: Props) {
+export function SqlEditor({ value, onChange, onRun, schema, placeholder, className, minHeight = 180, initialSelection, onSelection, revealLine }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -96,6 +97,29 @@ export function SqlEditor({ value, onChange, onRun, schema, placeholder, classNa
   const [activeWord, setActiveWord] = useState<{ start: number; end: number } | null>(null);
 
   const lineCount = Math.max(1, value.split("\n").length);
+
+  useEffect(() => {
+    const focus = () => textareaRef.current?.focus();
+    window.addEventListener("mysqlui:focusEditor", focus);
+    return () => window.removeEventListener("mysqlui:focusEditor", focus);
+  }, []);
+
+  useEffect(() => {
+    if (revealLine == null) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    let offset = 0;
+    for (let line = 1; line < revealLine; line++) {
+      const next = value.indexOf("\n", offset);
+      if (next < 0) break;
+      offset = next + 1;
+    }
+    const fit = window.setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(offset, offset);
+    }, 0);
+    return () => window.clearTimeout(fit);
+  }, [revealLine, value]);
 
   useEffect(() => {
     const ta = textareaRef.current;

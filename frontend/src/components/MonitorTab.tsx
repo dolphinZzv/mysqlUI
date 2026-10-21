@@ -42,6 +42,9 @@ function formatBytes(n: number): string {
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+const REFRESH_KEY = "mysqlui.monitor.interval";
+const AUTO_KEY = "mysqlui.monitor.auto";
+
 export function MonitorTab({ connectionId }: Props) {
   const { t } = useI18n();
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
@@ -53,7 +56,12 @@ export function MonitorTab({ connectionId }: Props) {
   const [editVar, setEditVar] = useState<{ name: string; value: string; scope: "GLOBAL" | "SESSION" } | null>(null);
   const [varBusy, setVarBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(() => localStorage.getItem(AUTO_KEY) !== "0");
+  const [refreshInterval, setRefreshInterval] = useState(() => {
+    const stored = Number(localStorage.getItem(REFRESH_KEY));
+    return [2, 5, 10, 30].includes(stored) ? stored : 5;
+  });
+  const [processView, setProcessView] = useState<"all" | "running" | "locked" | "slow">("all");
   const [filter, setFilter] = useState("");
   const [processFilter, setProcessFilter] = useState("");
   const [slowFilter, setSlowFilter] = useState("");
@@ -102,9 +110,9 @@ export function MonitorTab({ connectionId }: Props) {
     const id = window.setInterval(() => {
       api.processList(connectionId).then(setProcesses).catch(() => {});
       api.monitorOverview(connectionId).then(setOverview).catch(() => {});
-    }, 5000);
+    }, refreshInterval * 1000);
     return () => window.clearInterval(id);
-  }, [autoRefresh, connectionId]);
+  }, [autoRefresh, connectionId, refreshInterval]);
 
   const kill = async (queryOnly: boolean) => {
     if (!killTarget) return;
@@ -157,6 +165,16 @@ export function MonitorTab({ connectionId }: Props) {
     }
   };
 
+  const filteredProcesses = useMemo(() => {
+    const q = processFilter.toLowerCase();
+    return processes.filter((p) => {
+      if (processView === "running" && p.command === "Sleep") return false;
+      if (processView === "locked" && !/lock|wait/i.test(`${p.state} ${p.info}`)) return false;
+      if (processView === "slow" && Number(p.time) < 5) return false;
+      return !q || [p.user, p.db, p.command, p.state, p.info].some((v) => String(v ?? "").toLowerCase().includes(q));
+    });
+  }, [processes, processFilter, processView]);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-2">
@@ -164,11 +182,33 @@ export function MonitorTab({ connectionId }: Props) {
         <span className="text-sm font-medium">{t("monitor.overview", "Overview")}</span>
         {overview && <Badge variant="outline">{overview.version}</Badge>}
         <div className="ml-auto flex items-center gap-2">
+          <Select
+            value={String(refreshInterval)}
+            onValueChange={(value) => {
+              const n = Number(value);
+              setRefreshInterval(n);
+              localStorage.setItem(REFRESH_KEY, String(n));
+            }}
+          >
+            <SelectTrigger className="h-7 w-[92px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {[2, 5, 10, 30].map((seconds) => (
+                <SelectItem key={seconds} value={String(seconds)}>
+                  every {seconds}s
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+              onChange={(e) => {
+                setAutoRefresh(e.target.checked);
+                localStorage.setItem(AUTO_KEY, e.target.checked ? "1" : "0");
+              }}
               className="accent-primary"
             />
             auto
@@ -213,9 +253,23 @@ export function MonitorTab({ connectionId }: Props) {
           </TabsList>
 
           <TabsContent value="processes" className="mt-3">
-            <div className="relative mb-2">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-8 pl-8 text-xs" placeholder="Filter by user, database, command or SQL" value={processFilter} onChange={(e) => setProcessFilter(e.target.value)} />
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input className="h-8 w-[280px] pl-8 text-xs" placeholder="Filter by user, database, command or SQL" value={processFilter} onChange={(e) => setProcessFilter(e.target.value)} />
+              </div>
+              {(["all", "running", "locked", "slow"] as const).map((view) => (
+                <Button
+                  key={view}
+                  size="sm"
+                  variant={processView === view ? "default" : "outline"}
+                  className="h-7 text-xs"
+                  onClick={() => setProcessView(view)}
+                >
+                  {view === "all" ? "All" : view === "running" ? "Running" : view === "locked" ? "Locks / waits" : "Slow (≥5s)"}
+                </Button>
+              ))}
+              <span className="ml-auto text-xs text-muted-foreground">{filteredProcesses.length} shown</span>
             </div>
             <div className="overflow-hidden rounded-lg border">
               <table className="w-full text-[12px]">
@@ -232,7 +286,7 @@ export function MonitorTab({ connectionId }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {processes.filter((p) => { const q = processFilter.toLowerCase(); return !q || [p.user,p.db,p.command,p.state,p.info].some((v) => String(v ?? "").toLowerCase().includes(q)); }).map((p) => (
+                  {filteredProcesses.map((p) => (
                     <tr key={p.id} className="border-t hover:bg-muted/30">
                       <td className="px-2 py-1.5 font-mono text-muted-foreground">{p.id}</td>
                       <td className="px-2 py-1.5">{p.user}</td>

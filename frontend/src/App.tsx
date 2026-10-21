@@ -58,6 +58,7 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { BackupDialog } from "@/components/BackupDialog";
 import { ConnectionsToolsDialog } from "@/components/ConnectionsToolsDialog";
+import { CommandPalette, type PaletteAction } from "@/components/CommandPalette";
 import { useRouter, sameRoute, type Route } from "@/lib/router";
 import { readQueryDraft, deleteQueryDraft } from "@/lib/queryDrafts";
 import { recordRecentTable } from "@/lib/recentObjects";
@@ -156,6 +157,11 @@ export default function App() {
   const [updateOpen, setUpdateOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [connectionsToolsOpen, setConnectionsToolsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const shortcutActionsRef = useRef<{ newQuery: () => void; closeTab: (id: string) => void }>({
+    newQuery: () => {},
+    closeTab: () => {},
+  });
   const [importState, setImportState] = useState<{
     open: boolean;
     connection: Connection | null;
@@ -307,13 +313,50 @@ export default function App() {
   // ---- keyboard shortcuts ----
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      const meta = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (meta && key === "k" && !e.shiftKey) {
         e.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+      if (meta && e.shiftKey && key === "p") {
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+      if (meta && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        const current = tabsRef.current.findIndex((tab) => tab.id === activeIdRef.current);
+        if (current < 0 || tabsRef.current.length === 0) return;
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        const next = (current + delta + tabsRef.current.length) % tabsRef.current.length;
+        setActiveId(tabsRef.current[next].id);
+        return;
+      }
+      if (meta && e.altKey && key === "w") {
+        e.preventDefault();
+        if (activeIdRef.current) shortcutActionsRef.current.closeTab(activeIdRef.current);
+        return;
+      }
+      if (meta && e.altKey && key === "b") {
+        e.preventDefault();
+        setSidebarOpen((value) => !value);
+        return;
+      }
+      if (meta && e.altKey && key === "n") {
+        e.preventDefault();
+        shortcutActionsRef.current.newQuery();
+        return;
+      }
+      if (meta && e.altKey && key === "e") {
+        e.preventDefault();
+        window.dispatchEvent(new Event("mysqlui:focusEditor"));
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- tab helpers ----
@@ -478,6 +521,8 @@ export default function App() {
     openQuery(conn, activeTab?.database ?? "");
   }, [connections, tabs, activeId, openQuery, t]);
 
+  shortcutActionsRef.current = { newQuery: handleNewQuery, closeTab };
+
   const handleDatabaseDropped = useCallback((connectionId: string, database: string) => {
     const next = tabsRef.current.filter((t) => !(t.connectionId === connectionId && t.database === database));
     setTabs(next);
@@ -507,6 +552,113 @@ export default function App() {
   };
 
   const activeTab = useMemo(() => tabs.find((x) => x.id === activeId) ?? null, [tabs, activeId]);
+
+  const paletteActions = useMemo<PaletteAction[]>(() => {
+    const actions: PaletteAction[] = [
+      {
+        id: "new-query",
+        label: "New query",
+        group: "General",
+        shortcut: "Ctrl/⌘+Alt+N",
+        run: handleNewQuery,
+      },
+      {
+        id: "new-connection",
+        label: "New connection",
+        group: "General",
+        run: () => {
+          setEditing(null);
+          setDialogOpen(true);
+        },
+      },
+      {
+        id: "global-search",
+        label: "Search tables and columns",
+        group: "General",
+        shortcut: "Ctrl/⌘+K",
+        run: () => setSearchOpen(true),
+      },
+      {
+        id: "focus-editor",
+        label: "Focus SQL editor",
+        group: "General",
+        shortcut: "Ctrl/⌘+Alt+E",
+        run: () => window.dispatchEvent(new Event("mysqlui:focusEditor")),
+      },
+      {
+        id: "toggle-sidebar",
+        label: "Toggle sidebar",
+        group: "Layout",
+        shortcut: "Ctrl/⌘+Alt+B",
+        run: () => setSidebarOpen((value) => !value),
+      },
+      {
+        id: "refresh-connections",
+        label: "Refresh connections",
+        group: "General",
+        run: () => void refreshConnections(),
+      },
+      {
+        id: "backups",
+        label: "Scheduled backups and files",
+        group: "Tools",
+        run: () => setBackupOpen(true),
+      },
+      {
+        id: "connection-tools",
+        label: "Connection tools (clone, test all, import/export)",
+        group: "Tools",
+        run: () => setConnectionsToolsOpen(true),
+      },
+      {
+        id: "updates",
+        label: "Check for updates",
+        group: "Tools",
+        run: () => setUpdateOpen(true),
+      },
+    ];
+    for (const tab of tabs) {
+      actions.push({
+        id: `tab:${tab.id}`,
+        label: `Switch to ${tab.customTitle ?? tab.title}`,
+        group: "Open tabs",
+        run: () => setActiveId(tab.id),
+      });
+    }
+    for (const connection of connections) {
+      actions.push(
+        {
+          id: `conn-query:${connection.id}`,
+          label: `New query · ${connection.name}`,
+          group: "Connections",
+          keywords: connection.host,
+          run: () => openQuery(connection),
+        },
+        {
+          id: `conn-monitor:${connection.id}`,
+          label: `Monitor · ${connection.name}`,
+          group: "Connections",
+          keywords: connection.host,
+          run: () => openGeneric("monitor", connection),
+        },
+        {
+          id: `conn-users:${connection.id}`,
+          label: `Users and privileges · ${connection.name}`,
+          group: "Connections",
+          keywords: connection.host,
+          run: () => openGeneric("users", connection),
+        },
+        {
+          id: `conn-diff:${connection.id}`,
+          label: `Cross-connection diff · ${connection.name}`,
+          group: "Connections",
+          keywords: connection.host,
+          run: () => openGeneric("crossdiff", connection),
+        }
+      );
+    }
+    return actions;
+  }, [tabs, connections, handleNewQuery, refreshConnections, openQuery, openGeneric]);
 
   if (auth === "checking") {
     return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">…</div>;
@@ -620,6 +772,7 @@ export default function App() {
                 setDialogOpen(true);
               }}
               onDatabaseDropped={handleDatabaseDropped}
+              onConnectionsChanged={() => void refreshConnections()}
             />
               <div
                 role="separator"
@@ -738,6 +891,8 @@ export default function App() {
       <ConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} connection={editing} onSaved={refreshConnections} />
       <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} />
       <BackupDialog open={backupOpen} onOpenChange={setBackupOpen} />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
+
       <ConnectionsToolsDialog
         open={connectionsToolsOpen}
         onOpenChange={setConnectionsToolsOpen}

@@ -16,6 +16,10 @@ import (
 const maxStructuredImportBytes = 64 << 20 // 64 MiB
 
 func insertRowsBulk(ctx context.Context, db *sql.DB, dbName, table string, columns []string, rows [][]any) (int64, error) {
+	return insertRowsBulkMode(ctx, db, dbName, table, columns, rows, "error")
+}
+
+func insertRowsBulkMode(ctx context.Context, db *sql.DB, dbName, table string, columns []string, rows [][]any, mode string) (int64, error) {
 	if len(columns) == 0 || len(rows) == 0 {
 		return 0, errors.New("columns and rows are required")
 	}
@@ -36,7 +40,14 @@ func insertRowsBulk(ctx context.Context, db *sql.DB, dbName, table string, colum
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	prefix := "INSERT INTO " + qualify(dbName, table) + " (" + strings.Join(quoted, ",") + ") VALUES "
+	verb := "INSERT INTO "
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "ignore":
+		verb = "INSERT IGNORE INTO "
+	case "replace", "upsert":
+		verb = "REPLACE INTO "
+	}
+	prefix := verb + qualify(dbName, table) + " (" + strings.Join(quoted, ",") + ") VALUES "
 	const batchSize = 200
 	var total int64
 	for start := 0; start < len(rows); start += batchSize {
@@ -176,6 +187,12 @@ func (s *Server) importExcelTable(w http.ResponseWriter, r *http.Request) {
 		defer r.MultipartForm.RemoveAll()
 	}
 	hasHeader := parseBool(r.FormValue("hasHeader"), true)
+	conflict := r.FormValue("conflict")
+	mapping, err := parseMapping(r.FormValue("mapping"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	f, err := excelize.OpenReader(io.LimitReader(file, maxStructuredImportBytes+1))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid Excel file: %w", err))
@@ -196,15 +213,22 @@ func (s *Server) importExcelTable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("Excel sheet is empty"))
 		return
 	}
-	columns := sheetRows[0]
-	startRow := 1
-	if !hasHeader {
-		columns, err = tableColumns(r.Context(), db, dbName, table)
+	tableCols, err := tableColumns(r.Context(), db, dbName, table)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	columns := tableCols
+	startRow := 0
+	if hasHeader {
+		columns, err = mapImportColumns(sheetRows[0], tableCols, mapping)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
+			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		startRow = 0
+		startRow = 1
+	} else if len(mapping) > 0 {
+		columns = mapping
 	}
 	for _, c := range columns {
 		if !validIdent(strings.TrimSpace(c)) {
@@ -234,7 +258,7 @@ func (s *Server) importExcelTable(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	imported, err := insertRowsBulk(r.Context(), db, dbName, table, columns, rows)
+	imported, err := insertRowsBulkMode(r.Context(), db, dbName, table, columns, rows, conflict)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

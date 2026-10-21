@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CopyPlus, Database as DatabaseIcon, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { DatabaseInfo } from "@/lib/types";
+import type { Connection, DatabaseInfo } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,12 +17,14 @@ interface Props {
   connectionId: string;
   database: string;
   table: string;
+  connections: Connection[];
   onDone?: () => void;
 }
 
-export function CopyTableDialog({ open, onOpenChange, connectionId, database, table, onDone }: Props) {
+export function CopyTableDialog({ open, onOpenChange, connectionId, database, table, connections, onDone }: Props) {
   const { t } = useI18n();
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [targetConnectionId, setTargetConnectionId] = useState(connectionId);
   const [targetDatabase, setTargetDatabase] = useState(database);
   const [targetTable, setTargetTable] = useState(`${table}_copy`);
   const [dropTarget, setDropTarget] = useState(false);
@@ -31,28 +33,44 @@ export function CopyTableDialog({ open, onOpenChange, connectionId, database, ta
 
   useEffect(() => {
     if (!open) return;
+    setTargetConnectionId(connectionId);
     setTargetDatabase(database);
     setTargetTable(`${table}_copy`);
     setDropTarget(false);
     setCopyData(true);
-    api
-      .listDatabases(connectionId)
-      .then(setDatabases)
-      .catch(() => setDatabases([]));
   }, [open, connectionId, database, table]);
 
+  useEffect(() => {
+    if (!open || !targetConnectionId) return;
+    api
+      .listDatabases(targetConnectionId)
+      .then((list) => {
+        setDatabases(list);
+        if (!list.some((d) => d.name === targetDatabase)) {
+          setTargetDatabase(list.find((d) => !d.isSystem)?.name ?? "");
+        }
+      })
+      .catch(() => setDatabases([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, targetConnectionId]);
+
   const submit = async () => {
-    if (!targetDatabase || !targetTable.trim()) {
-      toast.error(t("copyTable.required", "Target database and table name are required"));
+    if (!targetConnectionId || !targetDatabase || !targetTable.trim()) {
+      toast.error(t("copyTable.required", "Target connection, database and table name are required"));
       return;
     }
     setBusy(true);
     try {
-      const res = await api.copyTable(connectionId, database, table, {
+      const res = await api.crossCopyTable({
+        sourceConnectionId: connectionId,
+        sourceDatabase: database,
+        sourceTable: table,
+        targetConnectionId,
         targetDatabase,
         targetTable: targetTable.trim(),
         dropTarget,
         copyData,
+        copyStructure: true,
       });
       toast.success(
         copyData
@@ -83,6 +101,22 @@ export function CopyTableDialog({ open, onOpenChange, connectionId, database, ta
 
         <div className="grid gap-4 py-1">
           <div className="grid gap-2">
+            <Label>Target connection</Label>
+            <Select value={targetConnectionId} onValueChange={setTargetConnectionId}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {connections.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-2">
             <Label>{t("copyTable.targetDatabase", "Target database")}</Label>
             <Select value={targetDatabase} onValueChange={setTargetDatabase}>
               <SelectTrigger>
@@ -111,7 +145,7 @@ export function CopyTableDialog({ open, onOpenChange, connectionId, database, ta
 
           <label className="flex cursor-pointer select-none items-center gap-2 text-sm">
             <Checkbox checked={copyData} onCheckedChange={(v) => setCopyData(Boolean(v))} />
-            {t("copyTable.copyData", "Copy data (INSERT ... SELECT)")}
+            Copy table data
           </label>
           <label className="flex cursor-pointer select-none items-center gap-2 text-sm">
             <Checkbox checked={dropTarget} onCheckedChange={(v) => setDropTarget(Boolean(v))} />

@@ -41,6 +41,9 @@ import type {
   ConnectionExport,
   ConnectionImportResult,
   PrivilegeMatrix,
+  ImportPreview,
+  QueryEstimate,
+  CrossCopyResult,
 } from "./types";
 
 const BASE = "/api";
@@ -157,6 +160,11 @@ export const api = {
     request<ConnectionTestSummary[]>("/connections/test-all", { method: "POST", body: "{}" }),
   cloneConnection: (id: string) =>
     request<{ connection: Connection }>(`${connBase(id)}/clone`, { method: "POST", body: "{}" }),
+  setConnectionFavorite: (id: string, favorite: boolean) =>
+    request<{ ok: boolean; favorite: boolean }>(`${connBase(id)}/favorite`, {
+      method: "PUT",
+      body: JSON.stringify({ favorite }),
+    }),
   exportConnections: (passwords: boolean) =>
     request<ConnectionExport>(`/connections/export?passwords=${passwords ? "true" : "false"}`),
   importConnections: (connections: Connection[]) =>
@@ -310,6 +318,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  crossCopyTable: (body: {
+    sourceConnectionId: string;
+    sourceDatabase: string;
+    sourceTable: string;
+    targetConnectionId: string;
+    targetDatabase: string;
+    targetTable: string;
+    dropTarget: boolean;
+    copyData: boolean;
+    copyStructure: boolean;
+  }) => request<CrossCopyResult>("/table-copy", { method: "POST", body: JSON.stringify(body) }),
   addColumn: (id: string, db: string, table: string, column: ColumnDefInput, after?: string) =>
     request<{ ok: boolean }>(`${tableBase(id, db, table)}/columns`, {
       method: "POST",
@@ -340,6 +359,11 @@ export const api = {
     request<QueryResult>(`${connBase(id)}/query`, {
       method: "POST",
       body: JSON.stringify({ database, sql, ...opts }),
+    }),
+  estimateQuery: (id: string, database: string, sql: string) =>
+    request<QueryEstimate>(`${connBase(id)}/query/estimate`, {
+      method: "POST",
+      body: JSON.stringify({ database, sql }),
     }),
   cancelQuery: (id: string, runId: string) =>
     request<{ ok: boolean }>(`${connBase(id)}/query/${enc(runId)}/cancel`, { method: "POST" }),
@@ -402,11 +426,19 @@ export const api = {
     form.append("truncate", String(truncate));
     return upload<{ imported: number; columns: string[] }>(`${tableBase(id, db, table)}/import/json`, form);
   },
-  importExcel: (id: string, db: string, table: string, file: File, opts: { hasHeader: boolean; truncate: boolean }) => {
+  importExcel: (
+    id: string,
+    db: string,
+    table: string,
+    file: File,
+    opts: { hasHeader: boolean; truncate: boolean; mapping?: string[]; conflict?: string }
+  ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("hasHeader", String(opts.hasHeader));
     form.append("truncate", String(opts.truncate));
+    form.append("conflict", opts.conflict ?? "error");
+    if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
     return upload<{ imported: number; columns: string[] }>(`${tableBase(id, db, table)}/import/excel`, form);
   },
   importCSV: (
@@ -414,7 +446,14 @@ export const api = {
     db: string,
     table: string,
     file: File,
-    opts: { hasHeader: boolean; truncate: boolean; nullValue: string; delimiter: string }
+    opts: {
+      hasHeader: boolean;
+      truncate: boolean;
+      nullValue: string;
+      delimiter: string;
+      mapping?: string[];
+      conflict?: string;
+    }
   ) => {
     const form = new FormData();
     form.append("file", file);
@@ -422,7 +461,22 @@ export const api = {
     form.append("truncate", String(opts.truncate));
     form.append("nullValue", opts.nullValue);
     form.append("delimiter", opts.delimiter);
+    form.append("conflict", opts.conflict ?? "error");
+    if (opts.mapping) form.append("mapping", JSON.stringify(opts.mapping));
     return upload<{ imported: number; columns: string[] }>(`${tableBase(id, db, table)}/import`, form);
+  },
+  previewImport: (
+    id: string,
+    db: string,
+    table: string,
+    file: File,
+    opts: { delimiter: string; hasHeader: boolean }
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("delimiter", opts.delimiter);
+    form.append("hasHeader", String(opts.hasHeader));
+    return upload<ImportPreview>(`${tableBase(id, db, table)}/import/preview`, form);
   },
   importSQL: (id: string, db: string | null, file: File) => {
     const form = new FormData();

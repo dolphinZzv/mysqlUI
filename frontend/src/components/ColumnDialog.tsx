@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Check, Columns3, Loader2 } from "lucide-react";
 import type { ColumnDefInput } from "@/lib/types";
 import { COLUMN_TYPES, emptyColumn } from "@/lib/schema";
+import { addColumnSQL, modifyColumnSQL } from "@/lib/ddl";
+import { DDLPreviewDialog } from "@/components/DDLPreviewDialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +32,7 @@ interface Props {
   mode: "add" | "modify";
   column: ColumnDefInput;
   existingNames: string[];
+  tableName: string;
   onSubmit: (column: ColumnDefInput, after?: string) => Promise<void>;
 }
 
@@ -52,11 +55,12 @@ function CheckField({
   );
 }
 
-export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, onSubmit }: Props) {
+export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, tableName, onSubmit }: Props) {
   const [form, setForm] = useState<ColumnDefInput>(column);
   const [after, setAfter] = useState<string>("__end__");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [previewSQL, setPreviewSQL] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -64,6 +68,7 @@ export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, 
       setAfter("__end__");
       setError(null);
       setSaving(false);
+      setPreviewSQL(null);
     }
   }, [open, column, mode]);
 
@@ -79,10 +84,19 @@ export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, 
       setError("Type is required");
       return;
     }
+    const afterName = mode === "add" && after !== "__end__" ? after : undefined;
+    setError(null);
+    setPreviewSQL(
+      mode === "add" ? addColumnSQL(tableName, form, afterName) : modifyColumnSQL(tableName, column.name, form)
+    );
+  };
+
+  const execute = async () => {
     setSaving(true);
     setError(null);
     try {
       await onSubmit(form, mode === "add" && after !== "__end__" ? after : undefined);
+      setPreviewSQL(null);
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -197,10 +211,19 @@ export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, 
           </Button>
           <Button onClick={submit} disabled={saving}>
             {saving ? <Loader2 className="animate-spin" /> : <Check />}
-            {mode === "add" ? "Add column" : "Save changes"}
+            Preview & {mode === "add" ? "add column" : "save changes"}
           </Button>
         </DialogFooter>
       </DialogContent>
+      <DDLPreviewDialog
+        open={previewSQL !== null}
+        onOpenChange={(next) => !next && setPreviewSQL(null)}
+        title={mode === "add" ? "Add column" : "Modify column"}
+        sql={previewSQL ?? ""}
+        busy={saving}
+        confirmLabel={mode === "add" ? "Add column" : "Save changes"}
+        onConfirm={() => void execute()}
+      />
     </Dialog>
   );
 }

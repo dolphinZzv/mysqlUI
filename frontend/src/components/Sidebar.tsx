@@ -87,6 +87,7 @@ interface Props {
   onDelete: (connection: Connection) => void;
   onNewConnection: () => void;
   onDatabaseDropped?: (connectionId: string, database: string) => void;
+  onConnectionsChanged?: () => void;
 }
 
 const dbKey = (connId: string, db: string) => `${connId}:${db}`;
@@ -103,6 +104,7 @@ export function Sidebar({
   onDelete,
   onNewConnection,
   onDatabaseDropped,
+  onConnectionsChanged,
 }: Props) {
   const [filter, setFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
@@ -250,9 +252,31 @@ export function Sidebar({
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return connections;
-    return connections.filter((c) => c.name.toLowerCase().includes(q) || c.host.toLowerCase().includes(q));
+    const list = q
+      ? connections.filter((c) => c.name.toLowerCase().includes(q) || c.host.toLowerCase().includes(q))
+      : connections;
+    return [...list].sort((a, b) => {
+      const ga = (a.group || "").toLowerCase();
+      const gb = (b.group || "").toLowerCase();
+      if (ga !== gb) {
+        if (!ga) return 1;
+        if (!gb) return -1;
+        return ga.localeCompare(gb);
+      }
+      if (Boolean(a.favorite) !== Boolean(b.favorite)) return a.favorite ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
   }, [connections, filter]);
+
+  const toggleConnectionFavorite = async (conn: Connection) => {
+    try {
+      await api.setConnectionFavorite(conn.id, !conn.favorite);
+      toast.success(conn.favorite ? "Removed from favorites" : "Added to favorites");
+      onConnectionsChanged?.();
+    } catch (err) {
+      toast.error("Could not update favorite", { description: err instanceof Error ? err.message : String(err) });
+    }
+  };
 
   const visiblePins = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -470,13 +494,21 @@ export function Sidebar({
           </div>
         )}
 
-        {filtered.map((conn) => {
+        {filtered.map((conn, connIndex) => {
           const isOpen = expandedConns.has(conn.id);
+          const group = (conn.group || "").trim();
+          const previousGroup = connIndex > 0 ? (filtered[connIndex - 1].group || "").trim() : null;
+          const showGroup = group !== previousGroup;
           const connDbs = dbs[conn.id] || [];
           const connError = errors[conn.id];
           const connLoading = loading.has(`db:${conn.id}`);
           return (
             <div key={conn.id} className="mb-0.5">
+              {showGroup && (
+                <div className="flex items-center gap-1 px-2 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {group || "Ungrouped"}
+                </div>
+              )}
               <ContextMenu>
                 <ContextMenuTrigger asChild>
                   <div
@@ -508,6 +540,7 @@ export function Sidebar({
                         style={conn.color ? { color: conn.color } : undefined}
                       />
                     )}
+                    {conn.favorite && <Star className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-400" />}
                     <span className="min-w-0 flex-1 truncate font-medium">{conn.name}</span>
                     {conn.ssh?.enabled && (
                       <Network
@@ -559,6 +592,10 @@ export function Sidebar({
                           <Eye /> Test connection
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => void toggleConnectionFavorite(conn)}>
+                          <Star className={cn(conn.favorite && "fill-amber-400 text-amber-400")} />
+                          {conn.favorite ? "Remove from favorites" : "Add to favorites"}
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => onEdit(conn)}>
                           <Pencil /> Edit
                         </DropdownMenuItem>
@@ -599,6 +636,10 @@ export function Sidebar({
                     <Upload /> Restore SQL
                   </ContextMenuItem>
                   <ContextMenuSeparator />
+                  <ContextMenuItem onClick={() => void toggleConnectionFavorite(conn)}>
+                    <Star className={cn(conn.favorite && "fill-amber-400 text-amber-400")} />
+                    {conn.favorite ? "Remove from favorites" : "Add to favorites"}
+                  </ContextMenuItem>
                   <ContextMenuItem onClick={() => onEdit(conn)}>
                     <Pencil /> Edit
                   </ContextMenuItem>
@@ -950,6 +991,7 @@ export function Sidebar({
           connectionId={copyState.connection.id}
           database={copyState.database}
           table={copyState.table}
+          connections={connections}
           onDone={() => {
             if (copyState.connection) {
               const key = dbKey(copyState.connection.id, copyState.database);
