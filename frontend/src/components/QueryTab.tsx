@@ -68,6 +68,8 @@ import { extractParams } from "@/lib/sqlParams";
 import { assessSQLRisk, type SqlRisk } from "@/lib/sqlRisk";
 import { lineAt, statementAt } from "@/lib/sqlStatement";
 import { RiskDialog } from "@/components/RiskDialog";
+import { TransactionResultDialog } from "@/components/TransactionResultDialog";
+import type { TransactionResult } from "@/lib/types";
 
 interface Props {
   tab: QueryTabDef;
@@ -187,6 +189,9 @@ export function QueryTab({ tab, connections }: Props) {
   const [snippetsOpen, setSnippetsOpen] = useState(() => localStorage.getItem("mysqlui.snippetsOpen") === "1");
   const [paramRequest, setParamRequest] = useState<{ sql: string; names: string[]; startLine: number } | null>(null);
   const [errorLine, setErrorLine] = useState<number | null>(null);
+  const [txResult, setTxResult] = useState<TransactionResult | null>(null);
+  const [txRunning, setTxRunning] = useState(false);
+  const [txDialogOpen, setTxDialogOpen] = useState(false);
   const [riskRequest, setRiskRequest] = useState<{
     text: string;
     startLine: number;
@@ -400,6 +405,40 @@ export function QueryTab({ tab, connections }: Props) {
       }
     },
     [connectionId, database, timeoutSec, t],
+  );
+
+  const runInTransaction = useCallback(
+    async (all: boolean) => {
+      if (!connectionId) return;
+      let text = sql.trim();
+      if (!all) {
+        const range = statementAt(sql, selectionRef.current?.start ?? 0);
+        text = range.text;
+      }
+      if (!text) return;
+      const risks = assessSQLRisk(text);
+      if (risks.length > 0) {
+        const ok = window.confirm(
+          `This transaction contains a risky statement:\n\n${risks.map((risk) => `• ${risk.message}`).join("\n")}\n\nRun it anyway?`
+        );
+        if (!ok) return;
+      }
+      setTxDialogOpen(true);
+      setTxRunning(true);
+      setTxResult(null);
+      try {
+        const result = await api.runTransaction(connectionId, database, text);
+        setTxResult(result);
+        if (result.committed) toast.success(`Transaction committed (${result.executed} statements)`);
+        else toast.error("Transaction rolled back", { description: result.error });
+      } catch (err) {
+        toast.error("Transaction failed", { description: err instanceof Error ? err.message : String(err) });
+        setTxDialogOpen(false);
+      } finally {
+        setTxRunning(false);
+      }
+    },
+    [connectionId, database, sql]
   );
 
   const loadMore = useCallback(async () => {
@@ -652,6 +691,16 @@ export function QueryTab({ tab, connections }: Props) {
                 onClick={() => void transaction("ROLLBACK")}
               >
                 {t("query.rollback", "Rollback")}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+                Atomic script execution
+              </DropdownMenuLabel>
+              <DropdownMenuItem disabled={running || !sql.trim()} onClick={() => void runInTransaction(false)}>
+                Run current statement in transaction
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={running || !sql.trim()} onClick={() => void runInTransaction(true)}>
+                Run all statements in transaction
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -989,6 +1038,13 @@ export function QueryTab({ tab, connections }: Props) {
           database={database}
         />
       </div>
+
+      <TransactionResultDialog
+        open={txDialogOpen}
+        onOpenChange={setTxDialogOpen}
+        result={txResult}
+        running={txRunning}
+      />
 
       <QueryHistoryDialog
         open={historyDialogOpen}

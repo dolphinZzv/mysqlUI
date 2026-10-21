@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,58 @@ func TestRenameCreateTable(t *testing.T) {
 	out := renameCreateTable(in, "shop", "shop_copy")
 	if out != "CREATE TABLE `shop_copy` (\n  `id` int NOT NULL\n)" {
 		t.Fatalf("renameCreateTable = %q", out)
+	}
+}
+
+func TestKeysetCondition(t *testing.T) {
+	cond, args := keysetCondition([]string{"id"}, []any{10})
+	if cond != "((`id` > ?))" || len(args) != 1 || args[0] != 10 {
+		t.Fatalf("single key condition = %q, %#v", cond, args)
+	}
+	cond, args = keysetCondition([]string{"a", "b"}, []any{1, "x"})
+	if len(args) != 3 || args[0] != 1 || args[1] != 1 || args[2] != "x" {
+		t.Fatalf("composite args = %#v, cond=%q", args, cond)
+	}
+	if !strings.Contains(cond, "`a` = ? AND `b` > ?") {
+		t.Fatalf("composite condition = %q", cond)
+	}
+}
+
+func TestKeysetTokenRoundTrip(t *testing.T) {
+	token := encodeKeysetToken([]any{int64(42), "name"})
+	values, err := decodeKeysetToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 {
+		t.Fatalf("values = %#v", values)
+	}
+	if _, err := decodeKeysetToken("!!!"); err == nil {
+		t.Error("expected invalid token error")
+	}
+}
+
+func TestTransactionSafeStatement(t *testing.T) {
+	for _, stmt := range []string{"SELECT 1", "UPDATE t SET a=1 WHERE id=2", "DELETE FROM t WHERE id=1", "INSERT INTO t VALUES (1)", "WITH x AS (SELECT 1) SELECT * FROM x"} {
+		if !transactionSafeStatement(stmt) {
+			t.Errorf("expected safe: %s", stmt)
+		}
+	}
+	for _, stmt := range []string{"CREATE TABLE t (id int)", "ALTER TABLE t ADD c int", "DROP TABLE t", "TRUNCATE TABLE t", "BEGIN", "COMMIT", "SET autocommit=1"} {
+		if transactionSafeStatement(stmt) {
+			t.Errorf("expected unsafe: %s", stmt)
+		}
+	}
+}
+
+func TestTopoSortTables(t *testing.T) {
+	deps := map[string][]string{"orders": {"users"}, "items": {"orders"}}
+	got := topoSortTables([]string{"items", "orders", "users"}, deps)
+	index := map[string]int{}
+	for i, name := range got {
+		index[name] = i
+	}
+	if !(index["users"] < index["orders"] && index["orders"] < index["items"]) {
+		t.Fatalf("topo order = %#v", got)
 	}
 }

@@ -110,6 +110,10 @@ export interface TableData {
   limit: number;
   offset: number;
   primaryKey: string[];
+  nextToken?: string;
+  hasMore?: boolean;
+  estimatedTotal?: boolean;
+  keyset?: boolean;
 }
 
 export interface QueryResult {
@@ -527,4 +531,49 @@ export interface CrossCopyResult {
   ok: boolean;
   target: string;
   rowsCopied: number;
+}
+
+export interface DatabaseObjectDiff {
+  name: string;
+  type: string;
+  createSql?: string;
+}
+
+export interface DatabaseTableChange {
+  table: string;
+  type: string;
+  status: string;
+  diff?: SchemaDiffResult;
+  createSql?: string;
+}
+
+export interface CrossDatabaseDiffResult {
+  source: string;
+  target: string;
+  tablesAdded: DatabaseObjectDiff[];
+  tablesRemoved: DatabaseObjectDiff[];
+  tablesChanged: DatabaseTableChange[];
+  ddl: string[];
+  warnings: string[];
+  sourceTables: number;
+  targetTables: number;
+}
+
+export interface TransactionStatementResult {
+  statement: number;
+  preview: string;
+  success: boolean;
+  message: string;
+  affected: number;
+  rowCount: number;
+  durationMs: number;
+  error?: string;
+}
+
+export interface TransactionResult {
+  committed: boolean;
+  rolledBack: boolean;
+  executed: number;
+  results: TransactionStatementResult[];
+  error?: string;
 }

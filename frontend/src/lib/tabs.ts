@@ -21,7 +21,7 @@ export interface QueryTabDef {
   title: string;
 }
 
-export type GenericTabKind = "monitor" | "users" | "erd" | "diff" | "crossdiff" | "routines" | "versions";
+export type GenericTabKind = "monitor" | "users" | "erd" | "diff" | "crossdiff" | "crossdbdiff" | "routines" | "versions";
 
 export interface GenericTabDef {
   id: string;

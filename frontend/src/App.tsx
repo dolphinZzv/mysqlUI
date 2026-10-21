@@ -50,6 +50,7 @@ import { UsersTab } from "@/components/UsersTab";
 import { ErdView } from "@/components/ErdView";
 import { SchemaDiffView } from "@/components/SchemaDiffView";
 import { CrossDiffView } from "@/components/CrossDiffView";
+import { CrossDatabaseDiffView } from "@/components/CrossDatabaseDiffView";
 import { RoutinesView } from "@/components/RoutinesView";
 import { SchemaVersionsView } from "@/components/SchemaVersionsView";
 import { ObjectSearch } from "@/components/ObjectSearch";
@@ -85,6 +86,7 @@ const GENERIC_TITLES: Record<GenericTabKind, string> = {
   erd: "ER diagram",
   diff: "Schema diff",
   crossdiff: "Cross-connection diff",
+  crossdbdiff: "Database diff",
   routines: "Routines",
   versions: "Schema versions",
 };
@@ -654,6 +656,13 @@ export default function App() {
           group: "Connections",
           keywords: connection.host,
           run: () => openGeneric("crossdiff", connection),
+        },
+        {
+          id: `conn-db-diff:${connection.id}`,
+          label: `Whole-database diff · ${connection.name}`,
+          group: "Connections",
+          keywords: connection.host,
+          run: () => openGeneric("crossdbdiff", connection),
         }
       );
     }
@@ -959,6 +968,8 @@ function renderTab(
       return <SchemaDiffView connectionId={tab.connectionId} database={tab.database} />;
     case "crossdiff":
       return <CrossDiffView connections={connections} connectionId={tab.connectionId} database={tab.database} />;
+    case "crossdbdiff":
+      return <CrossDatabaseDiffView connections={connections} connectionId={tab.connectionId} database={tab.database} />;
     case "routines":
       return <RoutinesView connectionId={tab.connectionId} database={tab.database} />;
     case "versions":

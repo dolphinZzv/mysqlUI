@@ -12,8 +12,12 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Bookmark,
+  CopyPlus,
+  Save,
   Star,
   Table2,
+  Wand2,
   Trash2,
   X,
 } from "lucide-react";
@@ -53,6 +57,15 @@ import { DataDiffDialog } from "@/components/DataDiffDialog";
 import { PasteCellsDialog, type PasteCellChange } from "@/components/PasteCellsDialog";
 import { StatsDialog } from "@/components/StatsDialog";
 import { RowDetailDrawer } from "@/components/RowDetailDrawer";
+import { BulkEditDialog } from "@/components/BulkEditDialog";
+import {
+  readGridPrefs,
+  saveTableView,
+  useSavedTableViews,
+  writeGridPrefs,
+  type SavedTableView,
+} from "@/lib/tableViews";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useFavorites } from "@/lib/favorites";
 import {
   Dialog,
@@ -163,6 +176,12 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [rowDetail, setRowDetail] = useState<number | null>(null);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [pageMode, setPageMode] = useState<"offset" | "keyset">("offset");
+  const [keysetTokens, setKeysetTokens] = useState<(string | null)[]>([null]);
+  const [keysetPos, setKeysetPos] = useState(0);
+  const [gridVersion, setGridVersion] = useState(0);
+  const { views: allSavedViews, remove: removeSavedView } = useSavedTableViews();
   const [pasteCells, setPasteCells] = useState<{
     open: boolean;
     changes: PasteCellChange[];
@@ -182,6 +201,14 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
       });
     }
   }, [tab.connectionId, tab.database, tab.table]);
+
+  const hasPrimaryKey = Boolean(structure?.columns.some((column) => column.key === "PRI"));
+  const keysetActive = pageMode === "keyset" && !orderBy && hasPrimaryKey;
+  const currentKeysetToken = keysetActive ? keysetTokens[keysetPos] ?? null : null;
+  const tableViews = allSavedViews.filter(
+    (view) =>
+      view.connectionId === tab.connectionId && view.database === tab.database && view.table === tab.table
+  );
 
   const combinedFilters = useMemo<FilterCondition[]>(
     () => [
@@ -207,7 +234,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           p * size,
           orderBy,
           combinedFilters,
-          search
+          search,
+          keysetActive ? { keysetToken: currentKeysetToken, withTotal: false } : undefined
         );
         setData({ ...res, primaryKey: res.primaryKey ?? [] });
         setSelected(new Set());
@@ -217,7 +245,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         setLoading(false);
       }
     },
-    [tab.connectionId, tab.database, tab.table, orderBy, combinedFilters, search]
+    [tab.connectionId, tab.database, tab.table, orderBy, combinedFilters, search, keysetActive, currentKeysetToken]
   );
 
   useEffect(() => {
@@ -237,6 +265,11 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   useEffect(() => {
     void loadData(page, pageSize);
   }, [page, pageSize, loadData]);
+
+  useEffect(() => {
+    setKeysetTokens([null]);
+    setKeysetPos(0);
+  }, [combinedFilters, search, orderBy, pageSize, pageMode]);
 
   useEffect(() => {
     const state: TableViewState = { orderBy, filters, quickFilters, pageSize };
@@ -302,6 +335,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
       next = [{ column, desc: false }];
     }
     setOrderBy(next.map((entry) => (entry.desc ? `-${entry.column}` : entry.column)).join(","));
+    setPageMode("offset");
     setPage(0);
   };
 
@@ -523,6 +557,88 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     return values;
   })();
 
+  const applyTableView = useCallback(
+    (view: SavedTableView) => {
+      setOrderBy(view.orderBy ?? "");
+      setFilters(view.filters ?? []);
+      setQuickFilters(view.quickFilters ?? {});
+      setPageSize(view.pageSize || 100);
+      setPageMode("offset");
+      writeGridPrefs(tab.connectionId, tab.database, tab.table, view.gridPrefs);
+      setGridVersion((value) => value + 1);
+      setPage(0);
+      toast.success(`Applied view "${view.name}"`);
+    },
+    [tab.connectionId, tab.database, tab.table]
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        connectionId?: string;
+        database?: string;
+        table?: string;
+        viewId?: string;
+      };
+      if (
+        detail?.connectionId !== tab.connectionId ||
+        detail?.database !== tab.database ||
+        detail?.table !== tab.table ||
+        !detail.viewId
+      ) {
+        return;
+      }
+      const view = allSavedViews.find((item) => item.id === detail.viewId);
+      if (view) applyTableView(view);
+    };
+    window.addEventListener("mysqlui:applyTableView", handler);
+    return () => window.removeEventListener("mysqlui:applyTableView", handler);
+  }, [tab.connectionId, tab.database, tab.table, allSavedViews, applyTableView]);
+
+  const saveCurrentView = () => {
+    const name = window.prompt("Name this data view", `${tab.table} view`);
+    if (!name?.trim()) return;
+    saveTableView({
+      name: name.trim(),
+      connectionId: tab.connectionId,
+      connectionName: tab.connectionName,
+      database: tab.database,
+      table: tab.table,
+      orderBy,
+      filters,
+      quickFilters,
+      pageSize,
+      gridPrefs: readGridPrefs(tab.connectionId, tab.database, tab.table),
+    });
+    toast.success("Data view saved");
+  };
+
+  const duplicateSelected = async () => {
+    if (!data || selected.size === 0) return;
+    const names = data.columns.filter((name) => {
+      const meta = columnsMeta.find((column) => column.name === name);
+      if (!meta) return true;
+      return !/auto_increment|default_generated|generated/i.test(meta.extra);
+    });
+    if (names.length === 0) {
+      toast.error("No copyable columns");
+      return;
+    }
+    const rows = [...selected]
+      .sort((a, b) => a - b)
+      .map((rowIndex) =>
+        names.map((name) => data.rows[rowIndex][data.columns.indexOf(name)])
+      );
+    try {
+      const res = await api.bulkInsertRows(tab.connectionId, tab.database, tab.table, names, rows);
+      toast.success(`Duplicated ${res.affected} row(s)`);
+      setSelected(new Set());
+      await loadData(page, pageSize);
+    } catch (err) {
+      toast.error("Duplicate failed", { description: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   const refreshAll = () => {
     void loadStructure();
     void loadData(page, pageSize);
@@ -585,6 +701,37 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           <Button size="sm" variant="outline" onClick={() => setStatsOpen(true)}>
             <HardDrive /> Stats
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline">
+                <Bookmark /> Views{tableViews.length ? ` (${tableViews.length})` : ""}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuItem onClick={saveCurrentView}>
+                <Save /> Save current view…
+              </DropdownMenuItem>
+              {tableViews.length > 0 && <DropdownMenuSeparator />}
+              {tableViews.length > 0 && <DropdownMenuLabel>Saved views</DropdownMenuLabel>}
+              {tableViews.map((view) => (
+                <DropdownMenuItem key={view.id} onClick={() => applyTableView(view)}>
+                  <Bookmark className="h-3.5 w-3.5" />
+                  <span className="min-w-0 flex-1 truncate">{view.name}</span>
+                  <button
+                    className="rounded p-0.5 text-muted-foreground hover:text-destructive"
+                    title="Delete view"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeSavedView(view.id);
+                      toast.success("View deleted");
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="sm" variant="outline" onClick={() => void loadData(page, pageSize)} disabled={loading}>
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />} Refresh
           </Button>
@@ -614,7 +761,15 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
 
           <div className="ml-auto flex items-center gap-2">
             <span className="text-muted-foreground">
-              {formatNumber(start)}–{formatNumber(end)} of {formatNumber(total)}
+              {pageMode === "keyset" ? (
+                <>
+                  {formatNumber(data?.rows.length ?? 0)} rows · ~{formatNumber(total)} total
+                </>
+              ) : (
+                <>
+                  {formatNumber(start)}–{formatNumber(end)} of {formatNumber(total)}
+                </>
+              )}
             </span>
             <Select
               value={String(pageSize)}
@@ -634,17 +789,63 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
                 ))}
               </SelectContent>
             </Select>
-            <div className="flex items-center gap-1">
-              <Button size="icon-sm" variant="outline" disabled={page <= 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                <ChevronLeft />
-              </Button>
-              <span className="tabular-nums text-muted-foreground">
-                {page + 1} / {maxPage + 1}
-              </span>
-              <Button size="icon-sm" variant="outline" disabled={page >= maxPage || loading} onClick={() => setPage((p) => Math.min(maxPage, p + 1))}>
-                <ChevronRight />
-              </Button>
-            </div>
+            <Select
+              value={pageMode}
+              onValueChange={(value) => {
+                setPageMode(value as "offset" | "keyset");
+                setPage(0);
+              }}
+            >
+              <SelectTrigger className="h-7 w-[130px] text-xs" title="Keyset pagination avoids slow deep OFFSET queries">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="offset">Offset pages</SelectItem>
+                <SelectItem value="keyset" disabled={!hasPrimaryKey}>
+                  Keyset (fast)
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {pageMode === "keyset" ? (
+              <div className="flex items-center gap-1">
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={keysetPos === 0 || loading}
+                  onClick={() => {
+                    setKeysetPos((value) => Math.max(0, value - 1));
+                    setPage(0);
+                  }}
+                >
+                  <ChevronLeft />
+                </Button>
+                <span className="tabular-nums text-muted-foreground">page {keysetPos + 1}</span>
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  disabled={!data?.hasMore || !data?.nextToken || loading}
+                  onClick={() => {
+                    if (!data?.nextToken) return;
+                    setKeysetTokens((tokens) => [...tokens.slice(0, keysetPos + 1), data.nextToken ?? null]);
+                    setKeysetPos((value) => value + 1);
+                  }}
+                >
+                  <ChevronRight />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1">
+                <Button size="icon-sm" variant="outline" disabled={page <= 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                  <ChevronLeft />
+                </Button>
+                <span className="tabular-nums text-muted-foreground">
+                  {page + 1} / {maxPage + 1}
+                </span>
+                <Button size="icon-sm" variant="outline" disabled={page >= maxPage || loading} onClick={() => setPage((p) => Math.min(maxPage, p + 1))}>
+                  <ChevronRight />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -674,6 +875,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           </Centered>
         ) : data ? (
           <DataGrid
+            key={`${tab.id}:${gridVersion}`}
             columns={data.columns}
             rows={data.rows}
             columnsMeta={columnsMeta}
@@ -730,6 +932,12 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         {view === "data" && selected.size > 0 && (
           <div className="absolute left-3 top-3 z-30 flex items-center gap-3 rounded-md border bg-card/95 px-3 py-1.5 text-sm shadow-lg">
             <span className="text-muted-foreground">{selected.size} selected</span>
+            <Button size="sm" variant="outline" onClick={() => setBulkEditOpen(true)}>
+              <Wand2 /> Bulk edit
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void duplicateSelected()}>
+              <CopyPlus /> Duplicate
+            </Button>
             <Button
               size="sm"
               variant="destructive"
@@ -777,6 +985,19 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           }}
         />
       )}
+      <BulkEditDialog
+        open={bulkEditOpen}
+        onOpenChange={setBulkEditOpen}
+        columns={data?.columns ?? []}
+        columnsMeta={columnsMeta}
+        rows={data?.rows ?? []}
+        selected={selected}
+        onApply={(changes) => {
+          queueChanges(changes);
+          toast.success(`Added ${changes.length} change(s) to the pending batch`);
+        }}
+      />
+
       <RowDetailDrawer
         open={rowDetail !== null && Boolean(data)}
         onOpenChange={(open) => !open && setRowDetail(null)}

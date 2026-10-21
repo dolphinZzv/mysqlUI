@@ -44,6 +44,8 @@ import type {
   ImportPreview,
   QueryEstimate,
   CrossCopyResult,
+  CrossDatabaseDiffResult,
+  TransactionResult,
 } from "./types";
 
 const BASE = "/api";
@@ -232,8 +234,17 @@ export const api = {
     offset: number,
     orderBy?: string,
     filters?: FilterCondition[],
-    q?: string
-  ) => request<TableData>(`${tableBase(id, db, table)}/data?${dataQuery(limit, offset, orderBy, filters, q)}`),
+    q?: string,
+    opts?: { keysetToken?: string | null; withTotal?: boolean }
+  ) => {
+    const params = new URLSearchParams(dataQuery(limit, offset, orderBy, filters, q));
+    if (opts?.keysetToken !== undefined) {
+      params.set("keyset", "true");
+      if (opts.keysetToken) params.set("token", opts.keysetToken);
+      params.set("withTotal", opts.withTotal ? "true" : "false");
+    }
+    return request<TableData>(`${tableBase(id, db, table)}/data?${params.toString()}`);
+  },
   databaseStats: (id: string, db: string) =>
     request<DatabaseStats>(`${dbBase(id, db)}/stats`),
   tableStats: (id: string, db: string, table: string) =>
@@ -359,6 +370,11 @@ export const api = {
     request<QueryResult>(`${connBase(id)}/query`, {
       method: "POST",
       body: JSON.stringify({ database, sql, ...opts }),
+    }),
+  runTransaction: (id: string, database: string, sql: string) =>
+    request<TransactionResult>(`${connBase(id)}/query/transaction`, {
+      method: "POST",
+      body: JSON.stringify({ database, sql }),
     }),
   estimateQuery: (id: string, database: string, sql: string) =>
     request<QueryEstimate>(`${connBase(id)}/query/estimate`, {
@@ -560,6 +576,13 @@ export const api = {
     id: string,
     body: { sourceDatabase: string; sourceTable: string; targetDatabase: string; targetTable: string }
   ) => request<DataDiffResult>(`${connBase(id)}/data-diff`, { method: "POST", body: JSON.stringify(body) }),
+  crossDatabaseDiff: (body: {
+    sourceConnectionId: string;
+    sourceDatabase: string;
+    targetConnectionId: string;
+    targetDatabase: string;
+    includeDrops: boolean;
+  }) => request<CrossDatabaseDiffResult>("/cross-db-diff", { method: "POST", body: JSON.stringify(body) }),
   crossDiff: (body: {
     sourceConnectionId: string;
     sourceDatabase: string;

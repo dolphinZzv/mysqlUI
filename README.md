@@ -22,7 +22,8 @@ shipped as a **single binary** with the UI embedded.
   verification against `~/.ssh/known_hosts` (or an opt-out).
 - **Schema explorer** — sidebar tree of connections → databases → tables, with
   search, lazy loading and right-click actions.
-- **Data browser** — paginated grid with inline cell editing, insert row dialog,
+- **Data browser** — paginated grid with inline cell editing, optional keyset
+  (cursor) pagination for fast deep navigation of large tables, insert row dialog,
   delete rows, column sorting and multi-condition filtering. Drag across rows to
   select a range (Shift extends, Cmd/Ctrl adds) and delete them in one
   transaction. Columns can be resized, hidden, frozen and are remembered per
@@ -34,7 +35,9 @@ shipped as a **single binary** with the UI embedded.
   collect in a pending list, can be previewed as UPDATE statements, then
   committed in one transaction or rolled back as a batch. Open a row detail
   drawer for a vertical view of every field, including JSON/BLOB preview, copy,
-  edit and foreign-key jumps.
+  edit and foreign-key jumps. Save named data views (filter + sort + visibility +
+  freeze) and switch them from the toolbar or sidebar. Bulk-edit selected rows:
+  set one column, find/replace across columns, or duplicate selected rows.
 - **Result tools** — hide result columns, select rows and export only the selected
   rows/visible columns, or copy as CSV/Markdown/JSON/INSERT/column list/first-row
   WHERE clause.
@@ -68,6 +71,9 @@ shipped as a **single binary** with the UI embedded.
   INSERT/UPDATE, compare table data across databases, and import JSON/Excel.
 - **Cross-connection diff** — compare schema and table data between two saved
   connections, preview the sync SQL and execute explicitly against the target.
+- **Whole-database diff** — compare every table/view between two databases on
+  different connections, order migrations by foreign-key dependencies, surface
+  destructive-change warnings and optionally drop extra target objects.
 - **Cross-connection table copy** — copy a table's structure and data to another
   saved connection, with optional drop-target and row-copy controls.
 - **Table maintenance** — truncate, optimize, analyze, check, repair and edit
@@ -86,7 +92,10 @@ shipped as a **single binary** with the UI embedded.
   designer is available from the table structure view.
 - **Query control** — cancel a running query, choose an optional timeout, and
   use Begin/Commit/Rollback across requests via persistent query sessions,
-  run selected SQL, format SQL and load more result pages.
+  run selected SQL, format SQL and load more result pages. Run the current
+  statement or the whole script atomically in a transaction: every statement's
+  result is shown and any failure rolls the batch back (DDL is rejected because
+  MySQL implicitly commits it).
 - **Replication & slow queries** — inspect primary/replica status and the top
   statement digests from `performance_schema`, alongside the existing monitor.
 - **Self-update** — `mysqlui update` downloads and verifies the latest release and
@@ -155,7 +164,7 @@ irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 Options (environment variables):
 
 ```bash
-VERSION=v1.1.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
+VERSION=v1.2.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 ```
 
 Then run:
@@ -310,7 +319,7 @@ The release checksum is verified before the binary is replaced:
 ```bash
 mysqlui update                 # install the latest release
 mysqlui update --check         # only check, do not install
-mysqlui update --version v1.1.0
+mysqlui update --version v1.2.0
 mysqlui update --force         # reinstall even when already current
 ```
 
@@ -419,8 +428,8 @@ GitHub Release with the binaries and `checksums.txt`.
 To cut a release, push a version tag:
 
 ```bash
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 You can also trigger it manually from **Actions → Release → Run workflow**.
@@ -446,7 +455,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET` | `…/tables/{table}/structure` | table structure |
 | `GET` | `…/databases/{db}/stats` | database capacity totals |
 | `GET` | `…/tables/{table}/stats` | table rows/data/index/engine/collation stats |
-| `GET` | `…/tables/{table}/data` | paginated rows (`limit`, `offset`, `orderBy`, `filters`) |
+| `GET` | `…/tables/{table}/data` | paginated rows (`limit`, `offset`, `orderBy`, `filters`; `keyset`/`token` for cursor paging) |
 | `POST/PUT/DELETE` | `…/tables/{table}/rows` | insert / update / delete rows |
 | `POST` | `…/tables/{table}/rows/bulk-delete` | delete several rows by primary key in one transaction |
 | `POST` | `…/tables/{table}/rows/bulk-update` | apply a batch of cell edits in one transaction |
@@ -461,6 +470,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `POST` | `/api/connections/{id}/query` | run arbitrary SQL (supports `runId`, `sessionId`, `timeoutSec`) |
 | `POST` | `/api/connections/{id}/query/{runId}/cancel` | cancel a running query |
 | `POST` | `/api/connections/{id}/query/estimate` | EXPLAIN row estimate for risky DML |
+| `POST` | `/api/connections/{id}/query/transaction` | atomic script execution with rollback |
 | `POST` | `…/databases/{db}/views` | create or replace a view |
 | `POST` | `…/databases/{db}/objects` | create/replace procedure, function, trigger or event |
 | `POST` | `/api/connections/{id}/query/file` | execute an uploaded `.sql` script |
@@ -468,6 +478,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET/DELETE` | `/api/connections/{id}/schema-versions/{versionId}` | get / delete a snapshot |
 | `POST` | `/api/connections/{id}/schema-versions/diff` | diff two versions or a version vs live |
 | `POST` | `/api/cross-diff` | schema/data diff between two connections |
+| `POST` | `/api/cross-db-diff` | whole-database schema diff + ordered migration SQL |
 | `GET/POST/DELETE` | `/api/backups/files…` | list / download / delete / restore backup files |
 | `GET/POST` | `/api/connections/{id}/users/{host}/{user}/copy` | copy a user with grants |
 | `GET` | `/api/connections/{id}/privilege-matrix` | users × databases privilege matrix |

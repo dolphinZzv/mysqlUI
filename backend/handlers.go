@@ -103,6 +103,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/databases/{db}/tables/{table}/maintenance", s.tableMaintenance)
 	mux.HandleFunc("PUT /api/connections/{id}/databases/{db}/tables/{table}/options", s.updateTableOptions)
 	mux.HandleFunc("POST /api/connections/{id}/query/estimate", s.estimateQueryRows)
+	mux.HandleFunc("POST /api/connections/{id}/query/transaction", s.runTransaction)
 	mux.HandleFunc("POST /api/connections/{id}/query", s.runQuery)
 	mux.HandleFunc("POST /api/connections/{id}/query/{runId}/cancel", s.cancelQueryHandler)
 	mux.HandleFunc("POST /api/connections/{id}/query/file", s.runQueryFile)
@@ -165,6 +166,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/connections/{id}/diff", s.schemaDiff)
 	mux.HandleFunc("POST /api/connections/{id}/data-diff", s.dataDiff)
 	mux.HandleFunc("POST /api/cross-diff", s.crossDiff)
+	mux.HandleFunc("POST /api/cross-db-diff", s.crossDatabaseDiff)
 	mux.HandleFunc("POST /api/table-copy", s.copyTableAcrossConnections)
 
 	// schema versions (snapshots / 封板)
@@ -799,12 +801,16 @@ func primaryKeyColumns(ctx context.Context, db *sql.DB, schema, table string) []
 }
 
 type tableDataResponse struct {
-	Columns    []string `json:"columns"`
-	Rows       [][]any  `json:"rows"`
-	Total      int64    `json:"total"`
-	Limit      int      `json:"limit"`
-	Offset     int      `json:"offset"`
-	PrimaryKey []string `json:"primaryKey"`
+	Columns        []string `json:"columns"`
+	Rows           [][]any  `json:"rows"`
+	Total          int64    `json:"total"`
+	Limit          int      `json:"limit"`
+	Offset         int      `json:"offset"`
+	PrimaryKey     []string `json:"primaryKey"`
+	NextToken      string   `json:"nextToken,omitempty"`
+	HasMore        bool     `json:"hasMore,omitempty"`
+	EstimatedTotal bool     `json:"estimatedTotal,omitempty"`
+	Keyset         bool     `json:"keyset,omitempty"`
 }
 
 func (s *Server) tableStats(w http.ResponseWriter, r *http.Request) {
@@ -885,13 +891,20 @@ func (s *Server) tableData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var total int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qualify(dbName, table)+where, filterVals...).Scan(&total); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-
+	keysetRequested := parseBool(r.URL.Query().Get("keyset"), false)
+	withTotal := parseBool(r.URL.Query().Get("withTotal"), true)
+	keysetToken := r.URL.Query().Get("token")
 	pk := primaryKeyColumns(ctx, db, dbName, table)
+	if keysetRequested {
+		if len(pk) == 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("keyset pagination requires a primary key"))
+			return
+		}
+		if order != "" {
+			writeErr(w, http.StatusBadRequest, errors.New("keyset pagination only supports primary-key order"))
+			return
+		}
+	}
 	if order == "" && len(pk) > 0 {
 		quoted := make([]string, len(pk))
 		for i, c := range pk {
@@ -900,29 +913,89 @@ func (s *Server) tableData(w http.ResponseWriter, r *http.Request) {
 		order = " ORDER BY " + strings.Join(quoted, ", ")
 	}
 
-	q := fmt.Sprintf("SELECT * FROM %s%s%s LIMIT ? OFFSET ?", qualify(dbName, table), where, order)
-	args := append(append([]any{}, filterVals...), limit, offset)
-	rows, err := db.QueryContext(ctx, q, args...)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
+	resp := tableDataResponse{Limit: limit, Offset: offset, PrimaryKey: pk}
+	var total int64
+	if !keysetRequested || withTotal {
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qualify(dbName, table)+where, filterVals...).Scan(&total); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		resp.Total = total
+	} else {
+		// Deep OFFSET pagination avoids COUNT(*); report an approximate row
+		// count from information_schema instead.
+		_ = db.QueryRowContext(ctx, `SELECT COALESCE(TABLE_ROWS,0) FROM information_schema.TABLES
+			WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`, dbName, table).Scan(&total)
+		resp.Total = total
+		resp.EstimatedTotal = true
 	}
-	defer rows.Close()
 
-	columns, data, _, err := scanRows(rows, 0)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+	var rows *sql.Rows
+	if keysetRequested {
+		vals, err := decodeKeysetToken(keysetToken)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		queryWhere := where
+		args := append([]any{}, filterVals...)
+		if len(vals) > 0 {
+			cond, condArgs := keysetCondition(pk, vals)
+			if cond == "" {
+				writeErr(w, http.StatusBadRequest, errors.New("pagination token does not match the primary key"))
+				return
+			}
+			if queryWhere == "" {
+				queryWhere = " WHERE " + cond
+			} else {
+				queryWhere += " AND " + cond
+			}
+			args = append(args, condArgs...)
+		}
+		q := fmt.Sprintf("SELECT * FROM %s%s%s LIMIT ?", qualify(dbName, table), queryWhere, order)
+		args = append(args, limit+1)
+		rows, err = db.QueryContext(ctx, q, args...)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		defer rows.Close()
+		columns, data, _, err := scanRows(rows, 0)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		resp.Keyset = true
+		if len(data) > limit {
+			resp.HasMore = true
+			data = data[:limit]
+		}
+		if len(data) > 0 {
+			if tokenValues, err := primaryKeyValues(columns, data[len(data)-1], pk); err == nil {
+				resp.NextToken = encodeKeysetToken(tokenValues)
+			}
+		}
+		resp.Columns = columns
+		resp.Rows = data
+	} else {
+		q := fmt.Sprintf("SELECT * FROM %s%s%s LIMIT ? OFFSET ?", qualify(dbName, table), where, order)
+		args := append(append([]any{}, filterVals...), limit, offset)
+		rows, err = db.QueryContext(ctx, q, args...)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		defer rows.Close()
+		columns, data, _, err := scanRows(rows, 0)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		resp.Columns = columns
+		resp.Rows = data
+		resp.HasMore = int64(offset+len(data)) < total
 	}
-
-	writeJSON(w, http.StatusOK, tableDataResponse{
-		Columns:    columns,
-		Rows:       data,
-		Total:      total,
-		Limit:      limit,
-		Offset:     offset,
-		PrimaryKey: pk,
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---- row write operations ----------------------------------------------

@@ -14,7 +14,7 @@ import type { GenericTabKind } from "@/lib/tabs";
  *   /c/:connectionId/db/:database/table/:table        table browser
  */
 
-export const GENERIC_KINDS: GenericTabKind[] = ["monitor", "users", "erd", "diff", "crossdiff", "routines", "versions"];
+export const GENERIC_KINDS: GenericTabKind[] = ["monitor", "users", "erd", "diff", "crossdiff", "crossdbdiff", "routines", "versions"];
 const GENERIC_SET = new Set<string>(GENERIC_KINDS);
 
 export type Route =

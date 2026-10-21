@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import {
   Activity,
   AlertCircle,
+  Bookmark,
   Braces,
   ChevronRight,
   Copy,
@@ -39,6 +40,7 @@ import type { GenericTabKind } from "@/lib/tabs";
 import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { useRecentTables } from "@/lib/recentObjects";
 import { useFavorites } from "@/lib/favorites";
+import { useSavedTableViews } from "@/lib/tableViews";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,6 +112,7 @@ export function Sidebar({
   const pinnedQueries = usePinnedQueries();
   const recentTables = useRecentTables();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
+  const { views: savedTableViews } = useSavedTableViews();
   const [expandedConns, setExpandedConns] = useState<Set<string>>(new Set());
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [dbs, setDbs] = useState<Record<string, DatabaseInfo[]>>({});
@@ -375,6 +378,47 @@ export function Sidebar({
           </div>
         )}
 
+        {savedTableViews.filter((view) => connections.some((c) => c.id === view.connectionId)).length > 0 && (
+          <div className="mb-2 border-b border-sidebar-border pb-1.5">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <Bookmark className="h-3 w-3" /> Data views
+            </div>
+            {savedTableViews
+              .filter((view) => connections.some((c) => c.id === view.connectionId))
+              .slice(0, 12)
+              .map((view) => {
+                const conn = connections.find((c) => c.id === view.connectionId);
+                if (!conn) return null;
+                return (
+                  <div
+                    key={view.id}
+                    className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] hover:bg-sidebar-accent"
+                    title={`${view.connectionName} / ${view.database}.${view.table}`}
+                    onClick={() => {
+                      onOpenTable(conn, view.database, view.table);
+                      window.setTimeout(() => {
+                        window.dispatchEvent(
+                          new CustomEvent("mysqlui:applyTableView", {
+                            detail: {
+                              connectionId: view.connectionId,
+                              database: view.database,
+                              table: view.table,
+                              viewId: view.id,
+                            },
+                          })
+                        );
+                      }, 80);
+                    }}
+                  >
+                    <Bookmark className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    <span className="min-w-0 flex-1 truncate">{view.name}</span>
+                    <span className="truncate text-[10px] text-muted-foreground">{view.table}</span>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
         {favorites.filter((f) => connections.some((c) => c.id === f.connectionId)).length > 0 && (
           <div className="mb-2 border-b border-sidebar-border pb-1.5">
             <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -574,6 +618,9 @@ export function Sidebar({
                         <DropdownMenuItem onClick={() => onOpenGeneric("crossdiff", conn)}>
                           <GitCompare /> Cross-connection diff
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onOpenGeneric("crossdbdiff", conn)}>
+                          <GitCompare /> Whole-database diff
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => refreshConnection(conn)}>
                           <RefreshCw /> Refresh
                         </DropdownMenuItem>
@@ -624,6 +671,9 @@ export function Sidebar({
                   </ContextMenuItem>
                   <ContextMenuItem onClick={() => onOpenGeneric("crossdiff", conn)}>
                     <GitCompare /> Cross-connection diff
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={() => onOpenGeneric("crossdbdiff", conn)}>
+                    <GitCompare /> Whole-database diff
                   </ContextMenuItem>
                   <ContextMenuItem onClick={() => refreshConnection(conn)}>
                     <RefreshCw /> Refresh
