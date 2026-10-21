@@ -110,7 +110,7 @@ export function DataDiffDialog({ open, onOpenChange, connectionId, database, tab
             </div>
             <div className="relative">
               <Textarea className="min-h-[300px] font-mono text-[11px]" value={result.sql || t("dataDiff.noDiff", "No differences found.")} readOnly spellCheck={false} />
-              <Button size="icon-sm" variant="outline" className="absolute right-2 top-2" onClick={copy} disabled={!result.sql}>
+              <Button size="icon-sm" variant="outline" title="Copy sync SQL" className="absolute right-2 top-2" onClick={copy} disabled={!result.sql}>
                 <Copy />
               </Button>
             </div>

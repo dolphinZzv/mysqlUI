@@ -382,7 +382,7 @@ function SimpleTable({
                     <Pencil />
                   </Button>
                 )}
-                <Button size="icon-sm" variant="ghost" className="hover:text-destructive" onClick={() => onDelete(i)}>
+                <Button size="icon-sm" variant="ghost" title="Drop object" className="hover:text-destructive" onClick={() => onDelete(i)}>
                   <Trash2 />
                 </Button>
               </td>

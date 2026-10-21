@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Copy, ExternalLink, Eye, Link2, Pencil, Save, X } from "lucide-react";
 import type { ColumnInfo, ForeignKeyInfo } from "@/lib/types";
 import { CellValue } from "@/components/CellValue";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -74,7 +75,7 @@ export function RowDetailDrawer({
           <Eye className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium">Row #{rowIndex + 1}</span>
           <span className="text-xs text-muted-foreground">{columns.length} columns</span>
-          <Button size="icon-sm" variant="ghost" className="ml-auto" onClick={() => onOpenChange(false)}>
+          <Button size="icon-sm" variant="ghost" className="ml-auto" title="Close details" onClick={() => onOpenChange(false)}>
             <X />
           </Button>
         </div>
@@ -98,7 +99,7 @@ export function RowDetailDrawer({
                         title="Copy value"
                         onClick={() => {
                           const text = value === null || value === undefined ? "NULL" : String(value);
-                          void navigator.clipboard.writeText(text);
+                          void navigator.clipboard.writeText(text).then(() => toast.success("Value copied"));
                         }}
                       >
                         <Copy />
@@ -136,7 +137,7 @@ export function RowDetailDrawer({
                           if (e.key === "Escape") setEditing(null);
                         }}
                       />
-                      <Button size="icon-sm" variant="outline" disabled={saving} onClick={() => void save(column)}>
+                      <Button size="icon-sm" variant="outline" title="Save value" disabled={saving} onClick={() => void save(column)}>
                         <Save />
                       </Button>
                     </div>

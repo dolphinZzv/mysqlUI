@@ -196,6 +196,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved }: Pr
               <Label htmlFor="name">Connection name</Label>
             <Input
               id="name"
+              autoFocus
               placeholder="My production db"
               value={form.name}
               onChange={(e) => set("name", e.target.value)}

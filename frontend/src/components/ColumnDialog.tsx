@@ -129,7 +129,18 @@ export function ColumnDialog({ open, onOpenChange, mode, column, existingNames, 
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
             <Label className="text-xs">Name</Label>
-            <Input className="h-8 font-mono text-[13px]" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            <Input
+              autoFocus
+              className="h-8 font-mono text-[13px]"
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
           </div>
           <div className="grid gap-1.5">
             <Label className="text-xs">Type</Label>

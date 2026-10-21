@@ -74,6 +74,7 @@ export function QueryHistoryDialog({
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
+              autoFocus
               className="h-8 w-[260px] pl-7 text-xs"
               placeholder="Search SQL"
               value={search}

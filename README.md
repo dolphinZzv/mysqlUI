@@ -164,7 +164,7 @@ irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 Options (environment variables):
 
 ```bash
-VERSION=v1.2.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
+VERSION=v1.3.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 ```
 
 Then run:
@@ -319,7 +319,7 @@ The release checksum is verified before the binary is replaced:
 ```bash
 mysqlui update                 # install the latest release
 mysqlui update --check         # only check, do not install
-mysqlui update --version v1.2.0
+mysqlui update --version v1.3.0
 mysqlui update --force         # reinstall even when already current
 ```
 
@@ -428,8 +428,8 @@ GitHub Release with the binaries and `checksums.txt`.
 To cut a release, push a version tag:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 You can also trigger it manually from **Actions → Release → Run workflow**.

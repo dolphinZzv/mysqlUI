@@ -6,6 +6,7 @@ import {
   Languages,
   LogOut,
   Moon,
+  Keyboard,
   MoreVertical,
   PanelLeftClose,
   ServerCog,
@@ -60,6 +61,7 @@ import { UpdateDialog } from "@/components/UpdateDialog";
 import { BackupDialog } from "@/components/BackupDialog";
 import { ConnectionsToolsDialog } from "@/components/ConnectionsToolsDialog";
 import { CommandPalette, type PaletteAction } from "@/components/CommandPalette";
+import { ShortcutCheatsheetDialog } from "@/components/ShortcutCheatsheetDialog";
 import { useRouter, sameRoute, type Route } from "@/lib/router";
 import { readQueryDraft, deleteQueryDraft } from "@/lib/queryDrafts";
 import { recordRecentTable } from "@/lib/recentObjects";
@@ -160,6 +162,8 @@ export default function App() {
   const [backupOpen, setBackupOpen] = useState(false);
   const [connectionsToolsOpen, setConnectionsToolsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const shortcutActionsRef = useRef<{ newQuery: () => void; closeTab: (id: string) => void }>({
     newQuery: () => {},
     closeTab: () => {},
@@ -232,6 +236,21 @@ export default function App() {
     const handler = () => setAuth("login");
     window.addEventListener("mysqlui:unauthorized", handler);
     return () => window.removeEventListener("mysqlui:unauthorized", handler);
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { id?: string; dirty?: boolean };
+      if (!detail?.id) return;
+      setDirtyTabs((prev) => {
+        const next = new Set(prev);
+        if (detail.dirty) next.add(detail.id as string);
+        else next.delete(detail.id as string);
+        return next;
+      });
+    };
+    window.addEventListener("mysqlui:queryDirty", handler);
+    return () => window.removeEventListener("mysqlui:queryDirty", handler);
   }, []);
 
   const refreshConnections = useCallback(async () => {
@@ -317,6 +336,12 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      if (!meta && e.key === "?" && !target?.closest("input, textarea, select, [contenteditable=true]")) {
+        e.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
       if (meta && key === "k" && !e.shiftKey) {
         e.preventDefault();
         setSearchOpen(true);
@@ -428,8 +453,19 @@ export default function App() {
   );
 
   const closeTab = (id: string) => {
+    if (dirtyTabs.has(id)) {
+      const tab = tabs.find((item) => item.id === id);
+      if (!window.confirm(`"${tab?.customTitle ?? tab?.title ?? "Query"}" has unsaved SQL changes. Close it anyway?`)) {
+        return;
+      }
+    }
     const idx = tabs.findIndex((x) => x.id === id);
     const next = tabs.filter((x) => x.id !== id);
+    setDirtyTabs((prev) => {
+      const copy = new Set(prev);
+      copy.delete(id);
+      return copy;
+    });
     setTabs(next);
     deleteQueryDraft(id);
     if (activeId === id) {
@@ -438,20 +474,29 @@ export default function App() {
     }
   };
 
-  const closeTabs = (ids: string[]) => {
+  const closeTabs = (ids: string[]): boolean => {
     const remove = new Set(ids);
-    if (remove.size === 0) return;
+    if (remove.size === 0) return false;
+    const dirtyCount = ids.filter((id) => dirtyTabs.has(id)).length;
+    if (dirtyCount > 0 && !window.confirm(`${dirtyCount} tab(s) have unsaved SQL changes. Close them anyway?`)) {
+      return false;
+    }
     const next = tabs.filter((x) => !remove.has(x.id));
+    setDirtyTabs((prev) => {
+      const copy = new Set(prev);
+      for (const id of remove) copy.delete(id);
+      return copy;
+    });
     for (const id of remove) deleteQueryDraft(id);
     setTabs(next);
     if (activeId && remove.has(activeId)) {
       setActiveId(next.length ? next[next.length - 1].id : null);
     }
+    return true;
   };
 
   const closeOtherTabs = (id: string) => {
-    closeTabs(tabs.filter((x) => x.id !== id).map((x) => x.id));
-    setActiveId(id);
+    if (closeTabs(tabs.filter((x) => x.id !== id).map((x) => x.id))) setActiveId(id);
   };
 
   const closeTabsToRight = (id: string) => {
@@ -613,6 +658,13 @@ export default function App() {
         run: () => setConnectionsToolsOpen(true),
       },
       {
+        id: "shortcuts",
+        label: "Keyboard shortcuts",
+        group: "Tools",
+        shortcut: "?",
+        run: () => setShortcutsOpen(true),
+      },
+      {
         id: "updates",
         label: "Check for updates",
         group: "Tools",
@@ -745,6 +797,9 @@ export default function App() {
                 <DropdownMenuItem onClick={() => setConnectionsToolsOpen(true)}>
                   <ServerCog /> {t("app.connectionTools", "Connection tools")}
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
+                  <Keyboard /> Keyboard shortcuts
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
@@ -827,6 +882,9 @@ export default function App() {
                           <span className="min-w-0 flex-1 truncate" title={tab.customTitle ?? tab.title}>
                             {tab.customTitle ?? tab.title}
                           </span>
+                          {dirtyTabs.has(tab.id) && (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" title="Unsaved SQL changes" />
+                          )}
                           <button
                             className="rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
                             onClick={(e) => {
@@ -901,6 +959,7 @@ export default function App() {
       <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} />
       <BackupDialog open={backupOpen} onOpenChange={setBackupOpen} />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
+      <ShortcutCheatsheetDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 
       <ConnectionsToolsDialog
         open={connectionsToolsOpen}

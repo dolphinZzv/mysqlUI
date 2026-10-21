@@ -156,7 +156,19 @@ export function TableDesignerDialog({ open, onOpenChange, onSubmit }: Props) {
             <Label htmlFor="t-name" className="text-xs">
               Table name
             </Label>
-            <Input id="t-name" value={name} onChange={(e) => setName(e.target.value)} className="h-8 font-mono text-[13px]" />
+            <Input
+              id="t-name"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              className="h-8 font-mono text-[13px]"
+            />
           </div>
           <div className="grid gap-1.5">
             <Label className="text-xs">Engine</Label>

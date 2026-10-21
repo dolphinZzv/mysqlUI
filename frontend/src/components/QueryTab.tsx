@@ -20,6 +20,7 @@ import {
   Pin,
   PinOff,
   Play,
+  RefreshCw,
   Server,
   Square,
   Star,
@@ -66,6 +67,7 @@ import { SnippetPanel } from "@/components/SnippetPanel";
 import { ParameterDialog } from "@/components/ParameterDialog";
 import { extractParams } from "@/lib/sqlParams";
 import { assessSQLRisk, type SqlRisk } from "@/lib/sqlRisk";
+import { friendlyMySQLError } from "@/lib/mysqlErrors";
 import { lineAt, statementAt } from "@/lib/sqlStatement";
 import { RiskDialog } from "@/components/RiskDialog";
 import { TransactionResultDialog } from "@/components/TransactionResultDialog";
@@ -187,8 +189,13 @@ export function QueryTab({ tab, connections }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastRunSql, setLastRunSql] = useState("");
   const [snippetsOpen, setSnippetsOpen] = useState(() => localStorage.getItem("mysqlui.snippetsOpen") === "1");
+  const [editorHeight, setEditorHeight] = useState(() => {
+    const stored = Number(localStorage.getItem("mysqlui.editorHeight"));
+    return Number.isFinite(stored) && stored >= 120 && stored <= 720 ? stored : 224;
+  });
   const [paramRequest, setParamRequest] = useState<{ sql: string; names: string[]; startLine: number } | null>(null);
   const [errorLine, setErrorLine] = useState<number | null>(null);
+  const [lastFailed, setLastFailed] = useState<{ text: string; startLine: number } | null>(null);
   const [txResult, setTxResult] = useState<TransactionResult | null>(null);
   const [txRunning, setTxRunning] = useState(false);
   const [txDialogOpen, setTxDialogOpen] = useState(false);
@@ -238,6 +245,17 @@ export function QueryTab({ tab, connections }: Props) {
   }, [sql, tab.id]);
 
   useEffect(() => {
+    const dirty = sql.trim() !== "" && sql.trim() !== lastRunSql.trim();
+    window.dispatchEvent(new CustomEvent("mysqlui:queryDirty", { detail: { id: tab.id, dirty } }));
+  }, [sql, lastRunSql, tab.id]);
+
+  useEffect(() => {
+    return () => {
+      window.dispatchEvent(new CustomEvent("mysqlui:queryDirty", { detail: { id: tab.id, dirty: false } }));
+    };
+  }, [tab.id]);
+
+  useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { id: string; sql: string };
       if (detail?.id === tab.id) setSql(detail.sql);
@@ -280,6 +298,7 @@ export function QueryTab({ tab, connections }: Props) {
         });
         setResult(res);
         setLastRunSql(text);
+        setLastFailed(null);
         const count = (res.results?.length ?? 0) + (res.isQuery ? 1 : 0);
         setActiveResult(Math.max(0, count - 1));
         if (/^\s*(BEGIN|START\s+TRANSACTION)\b/i.test(text)) setInTransaction(true);
@@ -295,6 +314,7 @@ export function QueryTab({ tab, connections }: Props) {
             ? err.message
             : String(err);
         setError(message);
+        if (!canceledRef.current) setLastFailed({ text, startLine });
         const match = message.match(/at line (\d+)/i);
         if (match && !canceledRef.current) setErrorLine(startLine + Number(match[1]) - 1);
       } finally {
@@ -379,6 +399,27 @@ export function QueryTab({ tab, connections }: Props) {
     [sql, assessAndRun]
   );
 
+  const startEditorResize = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = editorHeight;
+    const onMove = (move: MouseEvent) => {
+      setEditorHeight(Math.max(120, Math.min(720, startHeight + move.clientY - startY)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      setEditorHeight((height) => {
+        localStorage.setItem("mysqlui.editorHeight", String(height));
+        return height;
+      });
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [editorHeight]);
+
   const cancel = useCallback(async () => {
     if (!activeRunId || !connectionId) return;
     canceledRef.current = true;
@@ -429,7 +470,10 @@ export function QueryTab({ tab, connections }: Props) {
       try {
         const result = await api.runTransaction(connectionId, database, text);
         setTxResult(result);
-        if (result.committed) toast.success(`Transaction committed (${result.executed} statements)`);
+        if (result.committed) {
+          setLastRunSql(sql.trim());
+          toast.success(`Transaction committed (${result.executed} statements)`);
+        }
         else toast.error("Transaction rolled back", { description: result.error });
       } catch (err) {
         toast.error("Transaction failed", { description: err instanceof Error ? err.message : String(err) });
@@ -712,7 +756,7 @@ export function QueryTab({ tab, connections }: Props) {
           >
             <Hammer /> {t("query.builder", "Builder")}
           </Button>
-          <Button size="sm" variant="outline" onClick={toggleFavorite} disabled={!sql.trim()}>
+          <Button size="sm" variant="outline" onClick={toggleFavorite} disabled={!sql.trim()} title={t("query.favorite", "Favorite this query")}>
             <Star className={cn(favorites.includes(sql) && "fill-amber-400 text-amber-400")} />
           </Button>
           <Button
@@ -847,19 +891,30 @@ export function QueryTab({ tab, connections }: Props) {
             />
           </div>
         ) : (
-          <SqlEditor
-            value={sql}
-            onChange={setSql}
-            onRun={(selected) => void run(selected)}
-            schema={schema}
-            placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
-            className="h-56 shrink-0 border-b"
-            initialSelection={tab.initialSelection}
-            revealLine={errorLine}
-            onSelection={(selection) => {
-              selectionRef.current = selection;
-            }}
-          />
+          <>
+            <div className="shrink-0 border-b" style={{ height: editorHeight }}>
+              <SqlEditor
+                value={sql}
+                onChange={setSql}
+                onRun={(selected, options) => void run(selected, options)}
+                schema={schema}
+                placeholder={t("query.placeholder", "SELECT * FROM users LIMIT 100;")}
+                className="h-full"
+                initialSelection={tab.initialSelection}
+                revealLine={errorLine}
+                onSelection={(selection) => {
+                  selectionRef.current = selection;
+                }}
+              />
+            </div>
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              title="Drag to resize the SQL editor"
+              onMouseDown={startEditorResize}
+              className="h-1 shrink-0 cursor-row-resize bg-transparent transition-colors hover:bg-primary/40"
+            />
+          </>
         )}
   
         <div className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5 text-xs">
@@ -978,13 +1033,39 @@ export function QueryTab({ tab, connections }: Props) {
         <div className="min-h-0 flex-1">
           {error ? (
             <div className="h-full overflow-auto p-4">
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 font-mono text-[13px] text-destructive">
-                {errorLine && (
-                  <div className="mb-2 flex items-center gap-2 font-sans text-xs">
-                    <AlertTriangle className="h-3.5 w-3.5" /> Error near line {errorLine}. The editor was moved there.
-                  </div>
-                )}
-                {error}
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-destructive">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <AlertTriangle className="h-4 w-4" />
+                  <span className="text-sm font-semibold">{friendlyMySQLError(error).title}</span>
+                  {errorLine && <span className="text-xs">near line {errorLine}</span>}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto h-7 text-xs"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(error).then(() => toast.success("Error copied"));
+                    }}
+                  >
+                    <Copy /> Copy error
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      if (!lastFailed) return;
+                      setResult(null);
+                      setError(null);
+                      setErrorLine(null);
+                      void runRaw(lastFailed.text, lastFailed.startLine);
+                    }}
+                    disabled={running || !lastFailed}
+                  >
+                    <RefreshCw /> Retry
+                  </Button>
+                </div>
+                <p className="mb-2 text-xs text-destructive/90">{friendlyMySQLError(error).hint}</p>
+                <pre className="scrollbar-thin max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px]">{error}</pre>
               </div>
             </div>
           ) : currentResult?.isQuery ? (
@@ -1020,7 +1101,18 @@ export function QueryTab({ tab, connections }: Props) {
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <div className="text-center">
                 <Play className="mx-auto mb-2 h-6 w-6 opacity-40" />
-                {t("query.runHint", "Run a query to see results")}
+                <p>{t("query.runHint", "Run a query to see results")}</p>
+                <div className="mt-3 flex flex-wrap justify-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => run()} disabled={!sql.trim() || running}>
+                    <Play /> Run current statement
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setHistoryDialogOpen(true)}>
+                    <History /> Query history
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setSql(formatSQL(sql))} disabled={!sql.trim()}>
+                    <Wand2 /> Format SQL
+                  </Button>
+                </div>
               </div>
             </div>
           )}

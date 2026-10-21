@@ -124,10 +124,17 @@ export function BulkEditDialog({ open, onOpenChange, columns, columnsMeta, rows,
                   </label>
                 </div>
                 <Input
+                  autoFocus
                   className="h-8 font-mono text-xs"
                   value={value}
                   disabled={isNull}
                   onChange={(e) => setValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && changes.length > 0) {
+                      onApply(changes);
+                      onOpenChange(false);
+                    }
+                  }}
                 />
               </div>
             </>
@@ -136,7 +143,7 @@ export function BulkEditDialog({ open, onOpenChange, columns, columnsMeta, rows,
               <div className="grid grid-cols-2 gap-2">
                 <div className="grid gap-1.5">
                   <Label className="text-xs">Find</Label>
-                  <Input className="h-8 font-mono text-xs" value={search} onChange={(e) => setSearch(e.target.value)} />
+                  <Input autoFocus className="h-8 font-mono text-xs" value={search} onChange={(e) => setSearch(e.target.value)} />
                 </div>
                 <div className="grid gap-1.5">
                   <Label className="text-xs">Replace with</Label>

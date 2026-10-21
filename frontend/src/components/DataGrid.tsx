@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -13,6 +13,7 @@ import {
   Pencil,
   Pin,
   RotateCcw,
+  Search,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -53,11 +54,13 @@ interface Props {
   onSort?: (column: string, additive?: boolean) => void;
   onUpdateCell: (rowIndex: number, column: string, value: unknown) => Promise<void>;
   onDeleteRow: (rowIndex: number) => void;
+  onDeleteSelected?: () => void;
   onDuplicateRow?: (rowIndex: number) => void;
   onViewCell?: (rowIndex: number, column: string) => void;
   onRowDetail?: (rowIndex: number) => void;
   onJump?: (foreignKey: ForeignKeyInfo, value: unknown) => void;
   onPasteRange?: (startRow: number, startColumn: number, grid: string[][]) => void;
+  emptyActions?: ReactNode;
   /** Row indices (page-local) that are currently selected. */
   selected?: Set<number>;
   onSelectedChange?: (next: Set<number>) => void;
@@ -175,11 +178,13 @@ export function DataGrid({
   onSort,
   onUpdateCell,
   onDeleteRow,
+  onDeleteSelected,
   onDuplicateRow,
   onViewCell,
   onRowDetail,
   onJump,
   onPasteRange,
+  emptyActions,
   selected,
   onSelectedChange,
 }: Props) {
@@ -486,6 +491,18 @@ export function DataGrid({
       }
       return;
     }
+    if (meta && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      if (onSelectedChange && rows.length > 0) setSelection(new Set(rows.map((_, index) => index)));
+      return;
+    }
+    if (!meta && (event.key === "Delete" || event.key === "Backspace")) {
+      if (selection.size > 0 && onDeleteSelected) {
+        event.preventDefault();
+        onDeleteSelected();
+      }
+      return;
+    }
     if (meta && event.key.toLowerCase() === "v") {
       if (!range || !onPasteRange) return;
       event.preventDefault();
@@ -523,7 +540,8 @@ export function DataGrid({
         break;
       case "Enter":
         event.preventDefault();
-        moveFocus(event.shiftKey ? -1 : 1, 0, false);
+        if (range && onRowDetail) onRowDetail(range.focus.r);
+        else moveFocus(event.shiftKey ? -1 : 1, 0, false);
         break;
       case "Escape":
         event.preventDefault();
@@ -756,6 +774,24 @@ export function DataGrid({
                       </th>
                     </ContextMenuTrigger>
                     <ContextMenuContent>
+                      <ContextMenuItem onClick={() => copyText(col.name, "Column name copied")}>
+                        <Copy /> Copy column name
+                      </ContextMenuItem>
+                      {onQuickFiltersChange && (
+                        <ContextMenuItem
+                          onClick={() => {
+                            onQuickFiltersChange({ ...quickFilters, [col.name]: "" });
+                            window.setTimeout(() => {
+                              const input = document.querySelector<HTMLInputElement>(
+                                `[data-filter-column="${CSS.escape(col.name)}"]`
+                              );
+                              input?.focus();
+                            }, 50);
+                          }}
+                        >
+                          <Search /> Filter this column…
+                        </ContextMenuItem>
+                      )}
                       <ContextMenuItem onClick={() => setHidden(col.name, true)}>
                         <Eye /> Hide column
                       </ContextMenuItem>
@@ -799,6 +835,7 @@ export function DataGrid({
                     )}
                   >
                     <input
+                      data-filter-column={col.name}
                       className="h-6 w-full rounded border bg-background px-1.5 text-[11px] outline-none focus:border-primary"
                       placeholder="contains…"
                       value={quickDraft[col.name] ?? ""}
@@ -990,6 +1027,13 @@ export function DataGrid({
                           <ContextMenuItem onClick={() => beginEdit(r, c)}>
                             <Pencil /> Edit
                           </ContextMenuItem>
+                          {onQuickFiltersChange && cell !== null && cell !== undefined && (
+                            <ContextMenuItem
+                              onClick={() => onQuickFiltersChange({ ...quickFilters, [colName]: String(cell) })}
+                            >
+                              <Search /> Filter by this value
+                            </ContextMenuItem>
+                          )}
                           <ContextMenuItem onClick={() => onViewCell?.(r, colName)}>
                             <Eye /> View content
                           </ContextMenuItem>

@@ -41,7 +41,7 @@ import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { useRecentTables } from "@/lib/recentObjects";
 import { useFavorites } from "@/lib/favorites";
 import { useSavedTableViews } from "@/lib/tableViews";
-import { cn } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -567,6 +567,13 @@ export function Sidebar({
                         isOpen && "rotate-90"
                       )}
                     />
+                    <span
+                      className={cn(
+                        "h-2 w-2 shrink-0 rounded-full",
+                        connError ? "bg-destructive" : serverInfo[conn.id] ? "bg-emerald-500" : "bg-muted-foreground/40"
+                      )}
+                      title={connError ? `Disconnected: ${connError}` : serverInfo[conn.id] ? "Connected" : "Not tested yet"}
+                    />
                     {connError ? (
                       <Unplug className="h-4 w-4 shrink-0 text-destructive" />
                     ) : serverInfo[conn.id] ? (
@@ -705,9 +712,12 @@ export function Sidebar({
               {isOpen && (
                 <div className="ml-2 border-l border-sidebar-border pl-1.5">
                   {connError && (
-                    <div className="my-1 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                    <div className="my-1 flex flex-wrap items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
                       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      <span className="break-all">{connError}</span>
+                      <span className="min-w-0 flex-1 break-all">{connError}</span>
+                      <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => refreshConnection(conn)}>
+                        Reconnect
+                      </Button>
                     </div>
                   )}
                   {!connError && connDbs.length === 0 && !connLoading && (
@@ -858,10 +868,15 @@ export function Sidebar({
                                       <div
                                         className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[13px] hover:bg-sidebar-accent"
                                         onClick={() => onOpenTable(conn, db.name, table.name)}
-                                        title={table.comment || table.name}
+                                        title={table.comment || `${table.name}${Number(table.rows) > 0 ? ` · ~${formatNumber(Number(table.rows))} rows` : ""}`}
                                       >
                                         <Table2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
                                         <span className="min-w-0 flex-1 truncate">{table.name}</span>
+                                        {Number(table.rows) > 0 && (
+                                          <span className="shrink-0 text-[9px] tabular-nums text-muted-foreground" title={`~${formatNumber(Number(table.rows))} rows`}>
+                                            {formatNumber(Number(table.rows))}
+                                          </span>
+                                        )}
                                         {table.type === "VIEW" && (
                                           <Badge variant="warning" className="px-1 py-0 text-[10px]">
                                             view
@@ -922,6 +937,17 @@ export function Sidebar({
                                       </ContextMenuItem>
                                       <ContextMenuItem onClick={() => copy(table.name, "Table name copied")}>
                                         <Copy /> Copy name
+                                      </ContextMenuItem>
+                                      <ContextMenuItem
+                                        onClick={() =>
+                                          onNewQuery(
+                                            conn,
+                                            db.name,
+                                            `SELECT * FROM \`${db.name}\`.\`${table.name}\` LIMIT 100;`
+                                          )
+                                        }
+                                      >
+                                        <Terminal /> Open in query editor
                                       </ContextMenuItem>
                                       <ContextMenuItem
                                         onClick={() =>

@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,
+  Copy,
   Database as DatabaseIcon,
   GitCompare,
   HardDrive,
@@ -17,6 +18,7 @@ import {
   Save,
   Star,
   Table2,
+  TriangleAlert,
   Wand2,
   Trash2,
   X,
@@ -25,6 +27,7 @@ import { api } from "@/lib/api";
 import type { FilterCondition, ForeignKeyInfo, TableData, TableStructure } from "@/lib/types";
 import type { TableTabDef } from "@/lib/tabs";
 import { formatNumber } from "@/lib/utils";
+import { friendlyMySQLError } from "@/lib/mysqlErrors";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -90,6 +93,7 @@ interface TableViewState {
   filters: FilterCondition[];
   quickFilters: Record<string, string>;
   pageSize: number;
+  pageMode: "offset" | "keyset";
 }
 
 const tableStateKey = (tab: TableTabRef) =>
@@ -98,7 +102,7 @@ const tableStateKey = (tab: TableTabRef) =>
 type TableTabRef = { connectionId: string; database: string; table: string };
 
 function readTableViewState(tab: TableTabRef): TableViewState {
-  const fallback: TableViewState = { orderBy: "", filters: [], quickFilters: {}, pageSize: 100 };
+  const fallback: TableViewState = { orderBy: "", filters: [], quickFilters: {}, pageSize: 100, pageMode: "offset" };
   try {
     const params = new URLSearchParams(window.location.search);
     const raw = localStorage.getItem(tableStateKey(tab));
@@ -128,6 +132,7 @@ function readTableViewState(tab: TableTabRef): TableViewState {
       filters,
       quickFilters,
       pageSize: [50, 100, 200, 500, 1000].includes(Number(stored.pageSize)) ? Number(stored.pageSize) : 100,
+      pageMode: stored.pageMode === "keyset" ? "keyset" : "offset",
     };
   } catch {
     return fallback;
@@ -177,7 +182,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   const [statsOpen, setStatsOpen] = useState(false);
   const [rowDetail, setRowDetail] = useState<number | null>(null);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
-  const [pageMode, setPageMode] = useState<"offset" | "keyset">("offset");
+  const [pageMode, setPageMode] = useState<"offset" | "keyset">(initialState.pageMode);
   const [keysetTokens, setKeysetTokens] = useState<(string | null)[]>([null]);
   const [keysetPos, setKeysetPos] = useState(0);
   const [gridVersion, setGridVersion] = useState(0);
@@ -257,6 +262,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     setFilters(stored.filters);
     setQuickFilters(stored.quickFilters);
     setPageSize(stored.pageSize);
+    setPageMode(stored.pageMode);
     setSearch("");
     setSearchDraft("");
     void loadStructure();
@@ -272,7 +278,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
   }, [combinedFilters, search, orderBy, pageSize, pageMode]);
 
   useEffect(() => {
-    const state: TableViewState = { orderBy, filters, quickFilters, pageSize };
+    const state: TableViewState = { orderBy, filters, quickFilters, pageSize, pageMode };
     try {
       localStorage.setItem(tableStateKey(tab), JSON.stringify(state));
     } catch {
@@ -287,7 +293,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     else params.delete("quickFilters");
     const query = params.toString();
     window.history.replaceState(null, "", window.location.pathname + (query ? `?${query}` : ""));
-  }, [tab, orderBy, filters, quickFilters, pageSize]);
+  }, [tab, orderBy, filters, quickFilters, pageSize, pageMode]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -357,8 +363,10 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     return pk;
   };
 
-  const queueChanges = (changes: PasteCellChange[]) => {
+  const queueChanges = (changes: PasteCellChange[], undoLabel?: string) => {
     if (!data || changes.length === 0) return;
+    const previousRows = data.rows;
+    const previousPending = pending;
     const nextRows = data.rows.map((row) => [...row]);
     const nextPending = [...pending];
     for (const change of changes) {
@@ -386,6 +394,17 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
     }
     setData((prev) => (prev ? { ...prev, rows: nextRows } : prev));
     setPending(nextPending);
+    if (undoLabel) {
+      toast.success(undoLabel, {
+        action: {
+          label: "Undo",
+          onClick: () => {
+            setPending(previousPending);
+            setData((prev) => (prev ? { ...prev, rows: previousRows } : prev));
+          },
+        },
+      });
+    }
   };
 
   const handleUpdateCell = async (rowIndex: number, column: string, value: unknown) => {
@@ -835,13 +854,13 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
               </div>
             ) : (
               <div className="flex items-center gap-1">
-                <Button size="icon-sm" variant="outline" disabled={page <= 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                <Button size="icon-sm" variant="outline" title="Previous page" disabled={page <= 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
                   <ChevronLeft />
                 </Button>
                 <span className="tabular-nums text-muted-foreground">
                   {page + 1} / {maxPage + 1}
                 </span>
-                <Button size="icon-sm" variant="outline" disabled={page >= maxPage || loading} onClick={() => setPage((p) => Math.min(maxPage, p + 1))}>
+                <Button size="icon-sm" variant="outline" title="Next page" disabled={page >= maxPage || loading} onClick={() => setPage((p) => Math.min(maxPage, p + 1))}>
                   <ChevronRight />
                 </Button>
               </div>
@@ -869,8 +888,20 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           )
         ) : error ? (
           <Centered>
-            <div className="max-w-md rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-              {error}
+            <div className="max-w-lg rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-destructive">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <TriangleAlert className="h-4 w-4" /> {friendlyMySQLError(error).title}
+              </div>
+              <p className="mb-2 text-xs">{friendlyMySQLError(error).hint}</p>
+              <pre className="scrollbar-thin max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[12px]">{error}</pre>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2 h-7 text-xs"
+                onClick={() => void navigator.clipboard.writeText(error).then(() => toast.success("Error copied"))}
+              >
+                <Copy /> Copy error
+              </Button>
             </div>
           </Centered>
         ) : data ? (
@@ -892,11 +923,35 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
             }}
             onUpdateCell={handleUpdateCell}
             onDeleteRow={(r) => setDeleteTarget(r)}
+            onDeleteSelected={() => setBulkOpen(true)}
             onDuplicateRow={(r) => { setDuplicateRow(r); setAddOpen(true); }}
             onViewCell={(r, column) => setCellViewer({ open: true, rowIndex: r, column })}
             onRowDetail={(r) => setRowDetail(r)}
             onJump={(fk, value) => onOpenRef?.(fk, value)}
             onPasteRange={handlePasteRange}
+            emptyActions={
+              <>
+                <Button size="sm" variant="outline" onClick={() => { setDuplicateRow(null); setAddOpen(true); }}>
+                  <Plus /> Insert row
+                </Button>
+                {(filters.length > 0 || Object.keys(quickFilters).length > 0) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setFilters([]);
+                      setQuickFilters({});
+                      setPage(0);
+                    }}
+                  >
+                    <X /> Clear filters
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => void loadData(page, pageSize)}>
+                  <RefreshCw /> Refresh
+                </Button>
+              </>
+            }
             selected={selected}
             onSelectedChange={setSelected}
           />
@@ -979,9 +1034,8 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
           invalid={pasteCells.invalid}
           start={pasteCells.start}
           onApply={() => {
-            queueChanges(pasteCells.changes);
+            queueChanges(pasteCells.changes, `Added ${pasteCells.changes.length} cell change(s)`);
             setPasteCells(null);
-            toast.success(`Added ${pasteCells.changes.length} cell change(s) to the pending batch`);
           }}
         />
       )}
@@ -993,8 +1047,7 @@ export function TableTab({ tab, onRenamed, onDropped, onOpenRef }: Props) {
         rows={data?.rows ?? []}
         selected={selected}
         onApply={(changes) => {
-          queueChanges(changes);
-          toast.success(`Added ${changes.length} change(s) to the pending batch`);
+          queueChanges(changes, `Added ${changes.length} change(s) to the pending batch`);
         }}
       />
 

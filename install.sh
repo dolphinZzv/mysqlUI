@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 #
 # Options (environment variables):
-#   VERSION=v1.2.0        install a specific release (default: latest)
+#   VERSION=v1.3.0        install a specific release (default: latest)
 #   INSTALL_DIR=/path     install directory (default: /usr/local/bin or ~/.local/bin)
 #
 set -euo pipefail

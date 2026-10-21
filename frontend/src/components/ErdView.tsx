@@ -82,11 +82,11 @@ export function ErdView({ connectionId, database }: Props) {
           </>
         )}
         <div className="ml-auto flex items-center gap-1.5">
-          <Button size="icon-sm" variant="outline" onClick={() => setScale((s) => Math.max(0.3, +(s - 0.1).toFixed(2)))}>
+          <Button size="icon-sm" variant="outline" title="Zoom out" onClick={() => setScale((s) => Math.max(0.3, +(s - 0.1).toFixed(2)))}>
             <Minus />
           </Button>
           <span className="w-10 text-center text-xs tabular-nums">{Math.round(scale * 100)}%</span>
-          <Button size="icon-sm" variant="outline" onClick={() => setScale((s) => Math.min(2.5, +(s + 0.1).toFixed(2)))}>
+          <Button size="icon-sm" variant="outline" title="Zoom in" onClick={() => setScale((s) => Math.min(2.5, +(s + 0.1).toFixed(2)))}>
             <Plus />
           </Button>
           <Button

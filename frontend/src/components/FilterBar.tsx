@@ -149,7 +149,7 @@ export function FilterBar({ columns, filters, onApply }: Props) {
                     />
                   )}
 
-                  <Button size="icon-sm" variant="ghost" onClick={() => remove(i)}>
+                  <Button size="icon-sm" variant="ghost" title="Remove condition" onClick={() => remove(i)}>
                     <X />
                   </Button>
                 </div>
