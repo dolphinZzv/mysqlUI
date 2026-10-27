@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1
 
 # ---- build the frontend ----
-FROM node:20-alpine AS frontend
+FROM node:26-alpine AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN npm install -g pnpm@10 && pnpm install --frozen-lockfile
+RUN npm install -g pnpm@12.15.0 && pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm run build
 
 # ---- build the Go binary with the UI embedded ----
-FROM golang:1.26-alpine AS backend
+FROM golang:1.27-alpine AS backend
 WORKDIR /app
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
