@@ -17,6 +17,7 @@ import {
   History,
   Loader2,
   PanelRight,
+  Pencil,
   Pin,
   PinOff,
   Play,
@@ -32,7 +33,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Connection, DatabaseInfo, QueryResult } from "@/lib/types";
+import type { ColumnInfo, Connection, DatabaseInfo, QueryResult } from "@/lib/types";
 import type { QueryTabDef } from "@/lib/tabs";
 import { useI18n } from "@/lib/i18n";
 import { findPinnedQuery, pinQuery, unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
@@ -46,6 +47,7 @@ import {
 } from "@/lib/queryHistory";
 import { QueryHistoryDialog } from "@/components/QueryHistoryDialog";
 import { formatSQL } from "@/lib/sqlFormat";
+import { parseEditableQuery } from "@/lib/editableQuery";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -76,6 +78,14 @@ import type { TransactionResult } from "@/lib/types";
 interface Props {
   tab: QueryTabDef;
   connections: Connection[];
+}
+
+interface QueryEditTarget {
+  database: string;
+  table: string;
+  primaryKey: string[];
+  columnsMeta: ColumnInfo[];
+  editableColumns: Set<string>;
 }
 
 const FAVORITES_KEY = "mysqlui.favorites";
@@ -162,6 +172,7 @@ export function QueryTab({ tab, connections }: Props) {
   const [activeResult, setActiveResult] = useState(0);
   const [resultSelected, setResultSelected] = useState<Set<number>>(new Set());
   const [resultHidden, setResultHidden] = useState<Set<string>>(new Set());
+  const [editTarget, setEditTarget] = useState<QueryEditTarget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<QueryHistoryItem[]>(loadQueryHistory);
@@ -288,6 +299,7 @@ export function QueryTab({ tab, connections }: Props) {
       setRunning(true);
       setError(null);
       setErrorLine(null);
+      setEditTarget(null);
       try {
         const res = await api.runQuery(connectionId, database, text, {
           runId,
@@ -549,6 +561,102 @@ export function QueryTab({ tab, connections }: Props) {
     setResultSelected(new Set());
     setResultHidden(new Set());
   }, [currentResult]);
+
+  // Query results are editable only when the SQL is a single plain SELECT from
+  // one base table and the result includes every primary-key column. This keeps
+  // arbitrary joins/aggregates read-only.
+  const hasSingleQueryResult = Boolean(result?.isQuery && resultSets.length === 1 && resultSets[0] === result);
+  const resultColumnsSignature = currentResult?.isQuery ? currentResult.columns.join("\u0000") : "";
+  useEffect(() => {
+    setEditTarget(null);
+    if (!connection || connection.readOnly || !lastRunSql || !hasSingleQueryResult) return;
+    const parsed = parseEditableQuery(lastRunSql, database);
+    if (!parsed) return;
+
+    let cancelled = false;
+    void api
+      .tableStructure(connectionId, parsed.database, parsed.table)
+      .then((structure) => {
+        if (cancelled || structure.type !== "BASE TABLE") return;
+        const primaryKey = structure.columns
+          .filter((column) => column.key.toUpperCase() === "PRI")
+          .map((column) => column.name);
+        if (primaryKey.length === 0) return;
+
+        const resultColumns = new Set(currentResult.columns.map((name) => name.toLowerCase()));
+        if (!primaryKey.every((name) => resultColumns.has(name.toLowerCase()))) return;
+
+        const metaByName = new Map(structure.columns.map((column) => [column.name.toLowerCase(), column]));
+        const candidates = parsed.star ? structure.columns.map((column) => column.name) : parsed.columns;
+        const editableColumns = new Set<string>();
+        for (const name of candidates) {
+          const meta = metaByName.get(name.toLowerCase());
+          if (!meta) continue;
+          if (primaryKey.some((key) => key.toLowerCase() === meta.name.toLowerCase())) continue;
+          if (!resultColumns.has(meta.name.toLowerCase())) continue;
+          if (/auto_increment|generated/i.test(meta.extra)) continue;
+          if (/^(tiny|medium|long)?blob$|^(var)?binary\b/i.test(meta.type)) continue;
+          editableColumns.add(meta.name.toLowerCase());
+        }
+        if (editableColumns.size === 0) return;
+        setEditTarget({
+          database: parsed.database,
+          table: structure.name,
+          primaryKey,
+          columnsMeta: structure.columns,
+          editableColumns,
+        });
+      })
+      .catch(() => {
+        /* read-only fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, lastRunSql, hasSingleQueryResult, resultColumnsSignature, database, connectionId]);
+
+  const updateResultCell = useCallback(
+    async (rowIndex: number, column: string, value: unknown) => {
+      const target = editTarget;
+      const active = currentResult;
+      if (!target || !active) return;
+      const meta = target.columnsMeta.find((item) => item.name.toLowerCase() === column.toLowerCase());
+      if (!meta || !target.editableColumns.has(meta.name.toLowerCase())) {
+        throw new Error(`Column ${column} is read-only`);
+      }
+
+      const primaryKey: Record<string, unknown> = {};
+      for (const key of target.primaryKey) {
+        const index = active.columns.findIndex((name) => name.toLowerCase() === key.toLowerCase());
+        const keyValue = index >= 0 ? active.rows[rowIndex]?.[index] : undefined;
+        if (keyValue === null || keyValue === undefined) {
+          throw new Error("Cannot update a result row without a complete primary key");
+        }
+        primaryKey[key] = keyValue;
+      }
+
+      try {
+        await api.updateRow(connectionId, target.database, target.table, { [meta.name]: value }, primaryKey);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        toast.error(t("query.cellUpdateFailed", "Update failed"), { description: message });
+        throw err;
+      }
+      setResult((previous) => {
+        if (!previous || !previous.isQuery) return previous;
+        const index = previous.columns.findIndex((name) => name.toLowerCase() === meta.name.toLowerCase());
+        if (index < 0) return previous;
+        return {
+          ...previous,
+          rows: previous.rows.map((row, r) =>
+            r === rowIndex ? row.map((cell, c) => (c === index ? value : cell)) : row
+          ),
+        };
+      });
+      toast.success(t("query.cellUpdated", `Updated ${target.table}.${meta.name}`, { table: target.table, column: meta.name }));
+    },
+    [editTarget, currentResult, connectionId, t]
+  );
 
   const exportData = useMemo(() => {
     if (!currentResult) return { columns: [] as string[], rows: [] as unknown[][] };
@@ -952,6 +1060,16 @@ export function QueryTab({ tab, connections }: Props) {
   
           {currentResult && currentResult.isQuery && currentResult.rowCount > 0 && (
             <div className="ml-auto flex items-center gap-1.5">
+              {editTarget && view === "table" && (
+                <Badge
+                  variant="outline"
+                  className="h-7 gap-1 px-2 text-[11px] font-normal"
+                  title={t("query.inlineEditHint", "Double-click a non-primary-key cell to edit")}
+                >
+                  <Pencil className="h-3 w-3" />
+                  {t("query.inlineEdit", "Editable")} · {editTarget.table}
+                </Badge>
+              )}
               <Button
                 size="sm"
                 variant={view === "chart" ? "default" : "outline"}
@@ -1083,6 +1201,9 @@ export function QueryTab({ tab, connections }: Props) {
                 onSelectedChange={setResultSelected}
                 hidden={resultHidden}
                 onHiddenChange={setResultHidden}
+                editableColumns={editTarget?.editableColumns}
+                columnsMeta={editTarget?.columnsMeta}
+                onUpdateCell={editTarget ? updateResultCell : undefined}
               />
             )
           ) : result ? (

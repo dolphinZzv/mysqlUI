@@ -1,9 +1,11 @@
-import { useMemo, useRef, useState } from "react";
-import { Check, Columns3, Copy, Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Check, Columns3, Copy, Loader2, Pencil, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CellValue } from "@/components/CellValue";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import type { ColumnInfo } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -22,14 +24,89 @@ interface Props {
   onSelectedChange?: (next: Set<number>) => void;
   hidden?: Set<string>;
   onHiddenChange?: (next: Set<string>) => void;
+  /** Lower-cased column names that may be edited in place. */
+  editableColumns?: Set<string>;
+  columnsMeta?: ColumnInfo[];
+  onUpdateCell?: (rowIndex: number, column: string, value: unknown) => Promise<void>;
 }
 
-export function ResultGrid({ columns, rows, selected, onSelectedChange, hidden, onHiddenChange }: Props) {
+export function ResultGrid({
+  columns,
+  rows,
+  selected,
+  onSelectedChange,
+  hidden,
+  onHiddenChange,
+  editableColumns,
+  columnsMeta = [],
+  onUpdateCell,
+}: Props) {
   const [copied, setCopied] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<1 | -1>(1);
+  const [editing, setEditing] = useState<{ r: number; c: number } | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState<Set<string>>(new Set());
+  const inputRef = useRef<HTMLInputElement>(null);
   const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  useEffect(() => {
+    setEditing(null);
+  }, [rows, columns]);
+
+  const editableSet = useMemo(() => editableColumns ?? new Set<string>(), [editableColumns]);
+  const metaByName = useMemo(() => {
+    const map = new Map<string, ColumnInfo>();
+    columnsMeta.forEach((meta) => map.set(meta.name.toLowerCase(), meta));
+    return map;
+  }, [columnsMeta]);
+
+  const canEdit = (column: string) => Boolean(onUpdateCell && editableSet.has(column.toLowerCase()));
+
+  const beginEdit = (r: number, c: number) => {
+    const column = columns[c];
+    if (!column || !canEdit(column)) return;
+    const value = rows[r]?.[c];
+    setDraft(value === null || value === undefined ? "" : String(value));
+    setEditing({ r, c });
+  };
+
+  const commitEdit = async () => {
+    if (!editing || !onUpdateCell) return;
+    const { r, c } = editing;
+    const column = columns[c];
+    if (!column) {
+      setEditing(null);
+      return;
+    }
+    const meta = metaByName.get(column.toLowerCase());
+    const original = rows[r]?.[c];
+    const same = original === null || original === undefined ? draft === "" : String(original) === draft;
+    setEditing(null);
+    if (same) return;
+    const value = draft === "" && meta?.nullable ? null : draft;
+    const key = `${r}:${c}`;
+    setSaving((prev) => new Set(prev).add(key));
+    try {
+      await onUpdateCell(r, column, value);
+    } catch {
+      // The parent reports the error.
+    } finally {
+      setSaving((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
 
   const hiddenSet = hidden ?? new Set<string>();
   const selection = selected ?? new Set<number>();
@@ -62,11 +139,14 @@ export function ResultGrid({ columns, rows, selected, onSelectedChange, hidden, 
 
   const copyCell = (value: unknown, key: string) => {
     const text = value === null || value === undefined ? "NULL" : String(value);
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(key);
-      window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setCopied(null), 1200);
-    });
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(key);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(null), 1200);
+      })
+      .catch(() => toast.error("Clipboard is not available"));
   };
 
   const setSelection = (next: Set<number>) => onSelectedChange?.(next);
@@ -206,28 +286,73 @@ export function ResultGrid({ columns, rows, selected, onSelectedChange, hidden, 
                     const cell = row[col.index];
                     const numeric = typeof cell === "number";
                     const key = `${r}:${col.index}`;
+                    const isEditing = editing?.r === r && editing?.c === col.index;
+                    const isSaving = saving.has(key);
+                    const editable = canEdit(col.name);
                     return (
                       <td
                         key={col.index}
                         className={cn(
                           "group/cell relative max-w-[420px] cursor-pointer border-b border-r px-3 py-1 align-top",
-                          numeric && "text-right tabular-nums"
+                          numeric && "text-right tabular-nums",
+                          isEditing && "bg-primary/5"
                         )}
-                        onDoubleClick={() => copyCell(cell, key)}
+                        title={!isEditing && editable ? "Double-click to edit" : undefined}
+                        onDoubleClick={() => {
+                          if (editable) beginEdit(r, col.index);
+                          else copyCell(cell, key);
+                        }}
                       >
-                        <div className="flex items-center gap-1.5">
-                          <CellValue value={cell} />
-                          <button
-                            className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover/cell:opacity-100"
-                            title="Copy value"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              copyCell(cell, key);
+                        {isEditing ? (
+                          <input
+                            ref={inputRef}
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onBlur={() => void commitEdit()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === "Tab") {
+                                e.preventDefault();
+                                void commitEdit();
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                setEditing(null);
+                              }
                             }}
-                          >
-                            {copied === key ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
-                          </button>
-                        </div>
+                            className={cn(
+                              "w-full min-w-[100px] rounded border border-primary bg-background px-1.5 py-0.5 text-[13px] outline-none",
+                              numeric && "text-right"
+                            )}
+                          />
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <CellValue value={cell} />
+                            {isSaving && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />}
+                            <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/cell:opacity-100">
+                              {editable && (
+                                <button
+                                  className="rounded p-0.5 text-muted-foreground hover:bg-accent"
+                                  title="Edit value"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    beginEdit(r, col.index);
+                                  }}
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                              <button
+                                className="rounded p-0.5 text-muted-foreground hover:bg-accent"
+                                title="Copy value"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  copyCell(cell, key);
+                                }}
+                              >
+                                {copied === key ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </td>
                     );
                   })}

@@ -24,7 +24,7 @@ shipped as a **single binary** with the UI embedded.
     <td width="50%">
       <img src="docs/screenshots/sql-editor.png" alt="SQL editor and results" />
       <br />
-      <sub><b>SQL editor</b> — schema-aware autocomplete, multi-statement execution and result tools.</sub>
+      <sub><b>SQL editor</b> — schema-aware autocomplete, multi-statement execution, editable single-table results and export tools.</sub>
     </td>
   </tr>
   <tr>
@@ -75,7 +75,9 @@ shipped as a **single binary** with the UI embedded.
   set one column, find/replace across columns, or duplicate selected rows.
 - **Result tools** — hide result columns, select rows and export only the selected
   rows/visible columns, or copy as CSV/Markdown/JSON/INSERT/column list/first-row
-  WHERE clause.
+  WHERE clause. Results from a plain single-table `SELECT` can also be edited in
+  place (double-click or the pencil button); joins, aggregates and expressions
+  stay read-only, and updates target rows by primary key.
 - **Charts** — turn any query result into a bar / line / area / pie chart with a
   dependency-free SVG renderer, choosing the X axis, value fields and
   count / sum / avg / min / max aggregation.
