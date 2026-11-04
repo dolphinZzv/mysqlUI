@@ -6,6 +6,41 @@ shipped as a **single binary** with the UI embedded.
 
 ![status](https://img.shields.io/badge/build-go%20%2B%20vite-blue)
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/er-diagram.png" alt="ER diagram with real and inferred relationships" />
+  <br />
+  <sub><b>ER diagram</b> — real foreign keys (solid) and inferred application-level relationships (dashed), including self-references.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/data-browser.png" alt="Data browser" />
+      <br />
+      <sub><b>Data browser</b> — inline editing, filters, pending changes, saved views and foreign-key jumps.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/sql-editor.png" alt="SQL editor and results" />
+      <br />
+      <sub><b>SQL editor</b> — schema-aware autocomplete, multi-statement execution and result tools.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/screenshots/table-structure.png" alt="Table structure" />
+      <br />
+      <sub><b>Table structure</b> — columns, indexes, foreign keys and the generated <code>CREATE TABLE</code>.</sub>
+    </td>
+    <td width="50%">
+      <img src="docs/screenshots/monitor.png" alt="Server monitor" />
+      <br />
+      <sub><b>Server monitor</b> — live metrics, process list, status and variables.</sub>
+    </td>
+  </tr>
+</table>
+
 ## Features
 
 - **Connections** — create / edit / delete / test MySQL servers, with SSL modes.
