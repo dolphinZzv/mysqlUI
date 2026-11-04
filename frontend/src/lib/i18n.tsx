@@ -329,9 +329,14 @@ const zh: Record<string, string> = {
 
   // erd
   "erd.title": "关系图",
-  "erd.empty": "该数据库没有外键关系",
+  "erd.empty": "该数据库没有可显示的表",
   "erd.tables": "张表",
   "erd.relations": "个关系",
+  "erd.showInferred": "显示推断关系",
+  "erd.inferred": "推断关系",
+  "erd.inferredShort": "推断",
+  "erd.foreignKey": "数据库外键",
+  "erd.noRelations": "未发现外键，也没有可按列名推断的关系。",
   "erd.zoomIn": "放大",
   "erd.zoomOut": "缩小",
   "erd.reset": "重置",

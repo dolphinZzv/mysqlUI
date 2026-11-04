@@ -125,7 +125,9 @@ shipped as a **single binary** with the UI embedded.
   rename name conflicts instead of overwriting), organize connections into
   groups/favorites and paste a `mysql://user:pass@host/db` URL to fill the form.
 - **Global search** — find tables and columns across all databases (`Ctrl+K`).
-- **ER diagram** — visualize tables and foreign-key relationships.
+- **ER diagram** — visualize database foreign keys plus inferred
+  application-level relationships (for example `orders.user_id` →
+  `users.id`) with solid vs. dashed edges.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
   indexes, and generate or execute the migration SQL.
 - **Schema versioning** — "seal" (封板) a snapshot of a whole database's
@@ -164,7 +166,7 @@ irm https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.ps1 | iex
 Options (environment variables):
 
 ```bash
-VERSION=v1.3.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
+VERSION=v1.4.0 INSTALL_DIR=$HOME/bin curl -fsSL https://raw.githubusercontent.com/dolphinZzv/mysqlUI/main/install.sh | bash
 ```
 
 Then run:
@@ -319,7 +321,7 @@ The release checksum is verified before the binary is replaced:
 ```bash
 mysqlui update                 # install the latest release
 mysqlui update --check         # only check, do not install
-mysqlui update --version v1.3.0
+mysqlui update --version v1.4.0
 mysqlui update --force         # reinstall even when already current
 ```
 
@@ -428,8 +430,8 @@ GitHub Release with the binaries and `checksums.txt`.
 To cut a release, push a version tag:
 
 ```bash
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.4.0
+git push origin v1.4.0
 ```
 
 You can also trigger it manually from **Actions → Release → Run workflow**.
@@ -451,6 +453,7 @@ You can also trigger it manually from **Actions → Release → Run workflow**.
 | `GET/POST` | `/api/connections/{id}/databases` | list / create databases |
 | `DELETE` | `/api/connections/{id}/databases/{db}` | drop database |
 | `GET` | `/api/connections/{id}/databases/{db}/tables` | list tables |
+| `GET` | `…/databases/{db}/erd` | tables, foreign keys and inferred relationships |
 | `POST` | `/api/connections/{id}/databases/{db}/tables` | create table |
 | `GET` | `…/tables/{table}/structure` | table structure |
 | `GET` | `…/databases/{db}/stats` | database capacity totals |

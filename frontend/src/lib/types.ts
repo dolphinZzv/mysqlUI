@@ -278,6 +278,8 @@ export interface ErdEdge {
   fromColumn: string;
   toTable: string;
   toColumn: string;
+  kind?: "foreign_key" | "inferred";
+  confidence?: "high" | "medium" | string;
 }
 
 export interface ErdResponse {
