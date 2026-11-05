@@ -11,7 +11,7 @@ shipped as a **single binary** with the UI embedded.
 <p align="center">
   <img src="docs/screenshots/er-diagram.png" alt="ER diagram with real and inferred relationships" />
   <br />
-  <sub><b>ER diagram</b> — real foreign keys (solid) and inferred application-level relationships (dashed), including self-references.</sub>
+  <sub><b>ER diagram</b> — fields, keys, real foreign keys (solid) and inferred application-level relationships (dashed), including self-references. Click a field to edit it or use <b>+</b> to add one.</sub>
 </p>
 
 <table>
@@ -162,9 +162,10 @@ shipped as a **single binary** with the UI embedded.
   rename name conflicts instead of overwriting), organize connections into
   groups/favorites and paste a `mysql://user:pass@host/db` URL to fill the form.
 - **Global search** — find tables and columns across all databases (`Ctrl+K`).
-- **ER diagram** — visualize database foreign keys plus inferred
-  application-level relationships (for example `orders.user_id` →
-  `users.id`) with solid vs. dashed edges.
+- **ER diagram** — visualize tables, fields and keys alongside database foreign
+  keys plus inferred application-level relationships (for example
+  `orders.user_id` → `users.id`) with solid vs. dashed edges. Click a field in
+  the diagram to edit it, or use **+** to add a field without leaving the ERD.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
   indexes, and generate or execute the migration SQL.
 - **Schema versioning** — "seal" (封板) a snapshot of a whole database's

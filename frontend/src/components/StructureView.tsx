@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ColumnDefInput, ColumnInfo, IndexDefInput, TableStructure } from "@/lib/types";
-import { splitType } from "@/lib/schema";
+import { normalizeInformationSchemaDefault, splitType } from "@/lib/schema";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CellValue } from "@/components/CellValue";
@@ -79,7 +79,7 @@ function toColumnDef(col: ColumnInfo): ColumnDefInput {
     autoIncrement: /auto_increment/i.test(col.extra),
     primaryKey: col.key === "PRI",
     unique: col.key === "UNI",
-    default: col.default === undefined ? null : col.default,
+    default: normalizeInformationSchemaDefault(col.default === undefined ? null : col.default),
     hasDefault: col.default !== undefined,
     comment: col.comment,
     unsigned: /unsigned/i.test(col.type),

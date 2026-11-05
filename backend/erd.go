@@ -8,8 +8,19 @@ import (
 	"strings"
 )
 
+type erdColumn struct {
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Nullable bool    `json:"nullable"`
+	Key      string  `json:"key"`
+	Extra    string  `json:"extra,omitempty"`
+	Default  *string `json:"default"`
+	Comment  string  `json:"comment,omitempty"`
+}
+
 type erdTable struct {
-	Name string `json:"name"`
+	Name    string      `json:"name"`
+	Columns []erdColumn `json:"columns"`
 }
 
 type erdEdge struct {
@@ -35,6 +46,10 @@ type erdColumnMeta struct {
 	Name     string
 	Type     string
 	Nullable bool
+	Key      string
+	Extra    string
+	Default  *string
+	Comment  string
 }
 
 type erdTableMeta struct {
@@ -106,7 +121,6 @@ func loadErdMeta(ctx context.Context, db *sql.DB, dbName string) ([]*erdTableMet
 		return nil, nil, err
 	}
 	metas := []*erdTableMeta{}
-	tables := []erdTable{}
 	byName := map[string]*erdTableMeta{}
 	for rows.Next() {
 		var name string
@@ -117,7 +131,6 @@ func loadErdMeta(ctx context.Context, db *sql.DB, dbName string) ([]*erdTableMet
 		t := newErdTableMeta(name)
 		metas = append(metas, &t)
 		byName[name] = &t
-		tables = append(tables, erdTable{Name: name})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -126,7 +139,9 @@ func loadErdMeta(ctx context.Context, db *sql.DB, dbName string) ([]*erdTableMet
 	rows.Close()
 
 	colRows, err := db.QueryContext(ctx, `
-		SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+		SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
+		       COALESCE(COLUMN_KEY, ''), COALESCE(EXTRA, ''),
+		       COLUMN_DEFAULT, COALESCE(COLUMN_COMMENT, '')
 		FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = ?
 		ORDER BY TABLE_NAME, ORDINAL_POSITION`, dbName)
@@ -134,16 +149,26 @@ func loadErdMeta(ctx context.Context, db *sql.DB, dbName string) ([]*erdTableMet
 		return nil, nil, err
 	}
 	for colRows.Next() {
-		var table, name, typ, nullable string
-		if err := colRows.Scan(&table, &name, &typ, &nullable); err != nil {
+		var table, name, typ, nullable, key, extra, comment string
+		var def sql.NullString
+		if err := colRows.Scan(&table, &name, &typ, &nullable, &key, &extra, &def, &comment); err != nil {
 			colRows.Close()
 			return nil, nil, err
 		}
 		if t := byName[table]; t != nil {
+			var defaultValue *string
+			if def.Valid {
+				v := def.String
+				defaultValue = &v
+			}
 			t.addColumn(erdColumnMeta{
 				Name:     name,
 				Type:     typ,
 				Nullable: strings.EqualFold(nullable, "YES"),
+				Key:      key,
+				Extra:    extra,
+				Default:  defaultValue,
+				Comment:  comment,
 			})
 		}
 	}
@@ -207,6 +232,23 @@ func loadErdMeta(ctx context.Context, db *sql.DB, dbName string) ([]*erdTableMet
 		if idx.unique && len(idx.columns) == 1 {
 			idx.table.UniqueSingle[strings.ToLower(idx.columns[0])] = true
 		}
+	}
+
+	tables := make([]erdTable, 0, len(metas))
+	for _, t := range metas {
+		columns := make([]erdColumn, 0, len(t.Columns))
+		for _, c := range t.Columns {
+			columns = append(columns, erdColumn{
+				Name:     c.Name,
+				Type:     c.Type,
+				Nullable: c.Nullable,
+				Key:      c.Key,
+				Extra:    c.Extra,
+				Default:  c.Default,
+				Comment:  c.Comment,
+			})
+		}
+		tables = append(tables, erdTable{Name: t.Name, Columns: columns})
 	}
 	return metas, tables, nil
 }

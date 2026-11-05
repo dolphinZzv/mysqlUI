@@ -2,28 +2,57 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Minus, Plus, RefreshCw, Share2 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ErdEdge, ErdResponse } from "@/lib/types";
+import type { ColumnDefInput, ErdColumn, ErdEdge, ErdResponse, ErdTable } from "@/lib/types";
+import { emptyColumn, normalizeInformationSchemaDefault, splitType } from "@/lib/schema";
 import { useI18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ColumnDialog } from "@/components/ColumnDialog";
 
 interface Props {
   connectionId: string;
   database: string;
 }
 
-const BOX_W = 180;
-const BOX_H = 52;
-const GAP_X = 70;
-const GAP_Y = 52;
+const BOX_W = 250;
+const HEADER_H = 30;
+const COLUMN_H = 21;
+const FOOTER_H = 28;
+const GAP_X = 64;
+const GAP_Y = 48;
 const PAD = 70;
 
-type Position = { x: number; y: number };
+type Position = { x: number; y: number; height: number };
 type TableCounts = { fk: number; inferred: number };
 
 function truncateName(name: string, max = 24) {
   return name.length > max ? name.slice(0, max - 1) + "…" : name;
+}
+
+function tableHeight(table: ErdTable) {
+  return HEADER_H + Math.max(1, table.columns.length) * COLUMN_H + FOOTER_H;
+}
+
+function isGeneratedColumn(column: ErdColumn) {
+  return /(VIRTUAL|STORED) GENERATED/i.test(column.extra ?? "");
+}
+
+function toColumnDef(column: ErdColumn): ColumnDefInput {
+  const { base, length } = splitType(column.type);
+  return {
+    name: column.name,
+    type: base || column.type,
+    length,
+    nullable: column.nullable,
+    autoIncrement: /auto_increment/i.test(column.extra ?? ""),
+    primaryKey: column.key === "PRI",
+    unique: column.key === "UNI",
+    default: normalizeInformationSchemaDefault(column.default),
+    hasDefault: column.default !== null && column.default !== undefined,
+    comment: column.comment ?? "",
+    unsigned: /\bunsigned\b/i.test(column.type),
+  };
 }
 
 function edgePairKey(edge: ErdEdge) {
@@ -38,8 +67,8 @@ function edgePath(edge: ErdEdge, from: Position, to: Position, bend: number) {
     const sx = from.x + BOX_W * 0.62;
     const sy = from.y;
     const ex = from.x + BOX_W + 3;
-    const ey = from.y + BOX_H * 0.68;
-    return `M ${sx} ${sy} C ${from.x + BOX_W + 38} ${from.y - 52}, ${from.x + BOX_W + 62} ${from.y + BOX_H + 12}, ${ex} ${ey}`;
+    const ey = from.y + from.height * 0.68;
+    return `M ${sx} ${sy} C ${from.x + BOX_W + 38} ${from.y - 52}, ${from.x + BOX_W + 62} ${from.y + from.height + 12}, ${ex} ${ey}`;
   }
 
   const dx = to.x - from.x;
@@ -47,20 +76,28 @@ function edgePath(edge: ErdEdge, from: Position, to: Position, bend: number) {
   if (Math.abs(dx) >= Math.abs(dy)) {
     const dir = dx >= 0 ? 1 : -1;
     const x1 = dir > 0 ? from.x + BOX_W : from.x;
-    const y1 = from.y + BOX_H / 2;
+    const y1 = from.y + from.height / 2;
     const x2 = dir > 0 ? to.x - 3 : to.x + BOX_W + 3;
-    const y2 = to.y + BOX_H / 2;
+    const y2 = to.y + to.height / 2;
     const mx = (x1 + x2) / 2;
     return `M ${x1} ${y1} C ${mx} ${y1 + bend}, ${mx} ${y2 + bend}, ${x2} ${y2}`;
   }
 
   const dir = dy >= 0 ? 1 : -1;
   const x1 = from.x + BOX_W / 2;
-  const y1 = dir > 0 ? from.y + BOX_H : from.y;
+  const y1 = dir > 0 ? from.y + from.height : from.y;
   const x2 = to.x + BOX_W / 2;
-  const y2 = dir > 0 ? to.y - 3 : to.y + BOX_H + 3;
+  const y2 = dir > 0 ? to.y - 3 : to.y + to.height + 3;
   const my = (y1 + y2) / 2;
   return `M ${x1} ${y1} C ${x1 + bend} ${my}, ${x2 + bend} ${my}, ${x2} ${y2}`;
+}
+
+interface ColumnEditState {
+  open: boolean;
+  mode: "add" | "modify";
+  table: string;
+  column: ColumnDefInput;
+  existingNames: string[];
 }
 
 export function ErdView({ connectionId, database }: Props) {
@@ -69,6 +106,7 @@ export function ErdView({ connectionId, database }: Props) {
   const [loading, setLoading] = useState(true);
   const [scale, setScale] = useState(1);
   const [showInferred, setShowInferred] = useState(true);
+  const [columnEdit, setColumnEdit] = useState<ColumnEditState | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const loadSeq = useRef(0);
@@ -111,19 +149,35 @@ export function ErdView({ connectionId, database }: Props) {
 
   const layout = useMemo(() => {
     const tables = data?.tables ?? [];
+    if (tables.length === 0) {
+      return { positions: new Map<string, Position>(), width: PAD * 2 + BOX_W, height: PAD * 2 };
+    }
     const cols = Math.max(1, Math.ceil(Math.sqrt(tables.length)));
-    const rows = Math.max(1, Math.ceil(tables.length / cols));
+    const heights = tables.map(tableHeight);
+    const rowHeights: number[] = [];
+    tables.forEach((_, i) => {
+      const row = Math.floor(i / cols);
+      rowHeights[row] = Math.max(rowHeights[row] ?? 0, heights[i]);
+    });
+    const rowY: number[] = [];
+    let y = PAD;
+    rowHeights.forEach((height) => {
+      rowY.push(y);
+      y += height + GAP_Y;
+    });
+
     const positions = new Map<string, Position>();
-    tables.forEach((tb, i) => {
-      positions.set(tb.name, {
+    tables.forEach((table, i) => {
+      positions.set(table.name, {
         x: PAD + (i % cols) * (BOX_W + GAP_X),
-        y: PAD + Math.floor(i / cols) * (BOX_H + GAP_Y),
+        y: rowY[Math.floor(i / cols)],
+        height: heights[i],
       });
     });
     return {
       positions,
       width: PAD * 2 + cols * BOX_W + (cols - 1) * GAP_X,
-      height: PAD * 2 + rows * BOX_H + (rows - 1) * GAP_Y,
+      height: y - GAP_Y + PAD,
     };
   }, [data]);
 
@@ -171,6 +225,39 @@ export function ErdView({ connectionId, database }: Props) {
     return `${edge.fromTable}.${edge.fromColumn} → ${edge.toTable}.${edge.toColumn}\n${kind}${
       edge.constraint ? ` · ${edge.constraint}` : ""
     }`;
+  };
+
+  const openAddColumn = (table: ErdTable) => {
+    setColumnEdit({
+      open: true,
+      mode: "add",
+      table: table.name,
+      column: emptyColumn({ type: "varchar", length: "255" }),
+      existingNames: table.columns.map((column) => column.name),
+    });
+  };
+
+  const openEditColumn = (table: ErdTable, column: ErdColumn) => {
+    if (isGeneratedColumn(column)) return;
+    setColumnEdit({
+      open: true,
+      mode: "modify",
+      table: table.name,
+      column: toColumnDef(column),
+      existingNames: table.columns.map((item) => item.name),
+    });
+  };
+
+  const submitColumn = async (column: ColumnDefInput, after?: string) => {
+    if (!columnEdit) return;
+    if (columnEdit.mode === "add") {
+      await api.addColumn(connectionId, database, columnEdit.table, column, after);
+      toast.success(t("erd.columnAdded", "Field added"));
+    } else {
+      await api.modifyColumn(connectionId, database, columnEdit.table, columnEdit.column.name, column);
+      toast.success(t("erd.columnUpdated", "Field updated"));
+    }
+    await load();
   };
 
   const resetView = () => {
@@ -311,33 +398,121 @@ export function ErdView({ connectionId, database }: Props) {
                 );
               })}
 
-              {data.tables.map((tb) => {
-                const p = layout.positions.get(tb.name);
+              {data.tables.map((table) => {
+                const p = layout.positions.get(table.name);
                 if (!p) return null;
-                const counts = tableCounts.get(tb.name) ?? { fk: 0, inferred: 0 };
+                const counts = tableCounts.get(table.name) ?? { fk: 0, inferred: 0 };
                 const relationText = [
                   `${counts.fk} FK`,
                   counts.inferred ? `${counts.inferred} ${t("erd.inferredShort", "inferred")}` : "",
                 ]
                   .filter(Boolean)
                   .join(" · ");
+                const footerY = HEADER_H + Math.max(1, table.columns.length) * COLUMN_H;
                 return (
-                  <g key={tb.name} data-erd-box transform={`translate(${p.x},${p.y})`}>
+                  <g key={table.name} data-erd-box transform={`translate(${p.x},${p.y})`}>
                     <rect
                       width={BOX_W}
-                      height={BOX_H}
+                      height={p.height}
                       rx={8}
                       className="fill-card stroke-border"
                       strokeWidth={1}
                     />
-                    <rect width={BOX_W} height={22} rx={8} className="fill-primary/15" />
-                    <rect y={14} width={BOX_W} height={8} className="fill-primary/15" />
-                    <text x={10} y={15} className="fill-foreground text-[11px] font-medium">
-                      {truncateName(tb.name)}
+                    <rect width={BOX_W} height={HEADER_H} rx={8} className="fill-primary/15" />
+                    <rect y={HEADER_H - 8} width={BOX_W} height={8} className="fill-primary/15" />
+                    <text x={10} y={20} className="fill-foreground text-[11px] font-medium">
+                      {truncateName(table.name, 28)}
                     </text>
-                    <text x={10} y={38} className="fill-muted-foreground text-[10px]">
+
+                    {table.columns.map((column, index) => {
+                      const rowY = HEADER_H + index * COLUMN_H;
+                      const generated = isGeneratedColumn(column);
+                      const key = column.key === "PRI" ? "PK" : column.key === "UNI" ? "UQ" : "";
+                      return (
+                        <g
+                          key={column.name}
+                          className={generated ? undefined : "cursor-pointer"}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEditColumn(table, column);
+                          }}
+                        >
+                          <title>
+                            {`${column.name} · ${column.type}${column.nullable ? " NULL" : ""}${
+                              column.default ? ` · default ${column.default}` : ""
+                            }${generated ? " (generated)" : ""}${
+                              column.comment ? `\n${column.comment}` : ""
+                            }\n${generated ? "" : t("erd.editColumnHint", "Click to edit field")}`}
+                          </title>
+                          {index > 0 && (
+                            <line
+                              x1={0}
+                              y1={rowY}
+                              x2={BOX_W}
+                              y2={rowY}
+                              className="stroke-border/40"
+                              strokeWidth={0.7}
+                            />
+                          )}
+                          <rect
+                            x={0}
+                            y={rowY}
+                            width={BOX_W}
+                            height={COLUMN_H}
+                            className={generated ? "fill-transparent" : "fill-transparent hover:fill-primary/10"}
+                          />
+                          {key && (
+                            <text x={8} y={rowY + 14} className="fill-amber-400 text-[8px] font-semibold">
+                              {key}
+                            </text>
+                          )}
+                          <text
+                            x={key ? 27 : 10}
+                            y={rowY + 14}
+                            className={generated ? "fill-muted-foreground/70 text-[10px]" : "fill-foreground text-[10px]"}
+                          >
+                            {truncateName(column.name, 19)}
+                          </text>
+                          <text
+                            x={BOX_W - 8}
+                            y={rowY + 14}
+                            textAnchor="end"
+                            className="fill-muted-foreground text-[9px]"
+                          >
+                            {truncateName(column.type, 16)}
+                          </text>
+                        </g>
+                      );
+                    })}
+
+                    <line
+                      x1={0}
+                      y1={footerY}
+                      x2={BOX_W}
+                      y2={footerY}
+                      className="stroke-border/50"
+                      strokeWidth={0.7}
+                    />
+                    <text x={10} y={footerY + 18} className="fill-muted-foreground text-[9px]">
                       {relationText}
                     </text>
+                    <g
+                      transform={`translate(${BOX_W - 24},${footerY + 5})`}
+                      className="cursor-pointer"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openAddColumn(table);
+                      }}
+                    >
+                      <title>{t("erd.addColumn", "Add field")}</title>
+                      <rect width={18} height={18} rx={4} className="fill-primary/15 stroke-primary/30" />
+                      <path
+                        d="M9 5v8M5 9h8"
+                        className="stroke-primary"
+                        strokeWidth={1.5}
+                        strokeLinecap="round"
+                      />
+                    </g>
                   </g>
                 );
               })}
@@ -345,6 +520,18 @@ export function ErdView({ connectionId, database }: Props) {
           </svg>
         )}
       </div>
+
+      {columnEdit && (
+        <ColumnDialog
+          open={columnEdit.open}
+          onOpenChange={(open) => setColumnEdit(open ? columnEdit : null)}
+          mode={columnEdit.mode}
+          column={columnEdit.column}
+          existingNames={columnEdit.existingNames}
+          tableName={columnEdit.table}
+          onSubmit={submitColumn}
+        />
+      )}
     </div>
   );
 }

@@ -59,3 +59,20 @@ export function splitType(type: string): { base: string; length: string } {
   if (!m) return { base: type, length: "" };
   return { base: (m[1] || "").trim().toLowerCase(), length: (m[2] || "").trim() };
 }
+
+/**
+ * MariaDB sometimes returns string defaults from information_schema already
+ * wrapped in quotes ('pending'), while MySQL returns the bare value (pending).
+ * Normalise both forms so the DDL builder can quote exactly once.
+ */
+export function normalizeInformationSchemaDefault(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value
+      .slice(1, -1)
+      .replace(/''/g, "'")
+      .replace(/\\'/g, "'")
+      .replace(/\\\\/g, "\\");
+  }
+  return value;
+}

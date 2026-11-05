@@ -268,8 +268,19 @@ export interface EventInfo {
   comment: string;
 }
 
+export interface ErdColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  key: string;
+  extra?: string;
+  default: string | null;
+  comment?: string;
+}
+
 export interface ErdTable {
   name: string;
+  columns: ErdColumn[];
 }
 
 export interface ErdEdge {
