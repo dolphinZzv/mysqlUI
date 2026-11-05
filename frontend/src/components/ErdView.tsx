@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Minus, Plus, RefreshCw, Share2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -24,7 +24,31 @@ const GAP_Y = 48;
 const PAD = 70;
 
 type Position = { x: number; y: number; height: number };
+type TablePosition = { x: number; y: number };
 type TableCounts = { fk: number; inferred: number };
+
+const EMPTY_POSITIONS: Record<string, TablePosition> = {};
+
+function loadErdPositions(key: string): Record<string, TablePosition> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const positions: Record<string, TablePosition> = {};
+    for (const [name, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const x = (value as { x?: unknown }).x;
+      const y = (value as { y?: unknown }).y;
+      if (typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)) {
+        positions[name] = { x, y };
+      }
+    }
+    return positions;
+  } catch {
+    return {};
+  }
+}
 
 function truncateName(name: string, max = 24) {
   return name.length > max ? name.slice(0, max - 1) + "…" : name;
@@ -107,8 +131,23 @@ export function ErdView({ connectionId, database }: Props) {
   const [scale, setScale] = useState(1);
   const [showInferred, setShowInferred] = useState(true);
   const [columnEdit, setColumnEdit] = useState<ColumnEditState | null>(null);
+  const [draggingTable, setDraggingTable] = useState<string | null>(null);
+  const positionsKey = `mysqlui.erd.positions:${connectionId}:${database}`;
+  const [positionsState, setPositionsState] = useState<{ key: string; positions: Record<string, TablePosition> }>(() => ({
+    key: positionsKey,
+    positions: loadErdPositions(positionsKey),
+  }));
+  const manualPositions = positionsState.key === positionsKey ? positionsState.positions : EMPTY_POSITIONS;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const tableDrag = useRef<{
+    name: string;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    scale: number;
+  } | null>(null);
   const loadSeq = useRef(0);
   const uid = useId().replace(/:/g, "");
   const fkMarker = `erd-arrow-fk-${uid}`;
@@ -139,8 +178,91 @@ export function ErdView({ connectionId, database }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, database]);
 
+  useEffect(() => {
+    if (positionsState.key === positionsKey) return;
+    setPositionsState({ key: positionsKey, positions: loadErdPositions(positionsKey) });
+  }, [positionsKey, positionsState.key]);
+
+  useEffect(() => {
+    if (positionsState.key !== positionsKey) return;
+    try {
+      localStorage.setItem(positionsKey, JSON.stringify(positionsState.positions));
+    } catch {
+      /* ignore unavailable storage */
+    }
+  }, [positionsKey, positionsState]);
+
+  const updateTablePosition = useCallback(
+    (name: string, position: TablePosition) => {
+      setPositionsState((previous) => {
+        const base = previous.key === positionsKey ? previous.positions : loadErdPositions(positionsKey);
+        return { key: positionsKey, positions: { ...base, [name]: position } };
+      });
+    },
+    [positionsKey]
+  );
+
+  useEffect(() => {
+    if (!draggingTable) return;
+    const onMove = (event: MouseEvent) => {
+      const current = tableDrag.current;
+      if (!current) return;
+      const dx = (event.clientX - current.startX) / current.scale;
+      const dy = (event.clientY - current.startY) / current.scale;
+      updateTablePosition(current.name, {
+        x: Math.max(PAD, current.origX + dx),
+        y: Math.max(PAD, current.origY + dy),
+      });
+    };
+    const stop = () => {
+      tableDrag.current = null;
+      setDraggingTable(null);
+    };
+    const onBlur = () => stop();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [draggingTable, updateTablePosition]);
+
+  const beginTableDrag = (table: ErdTable, position: Position, event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    tableDrag.current = {
+      name: table.name,
+      startX: event.clientX,
+      startY: event.clientY,
+      origX: position.x,
+      origY: position.y,
+      scale,
+    };
+    setDraggingTable(table.name);
+  };
+
   const allEdges = data?.edges ?? [];
   const inferredCount = allEdges.filter((e) => e.kind === "inferred").length;
+  const connectedTables = useMemo(() => {
+    const connected = new Set<string>();
+    for (const edge of allEdges) {
+      connected.add(edge.fromTable);
+      connected.add(edge.toTable);
+    }
+    return connected;
+  }, [allEdges]);
+  const unconnectedCount = data?.tables.filter((table) => !connectedTables.has(table.name)).length ?? 0;
+  const visibleTables = useMemo(() => {
+    const tables = data?.tables ?? [];
+    const connected = tables.filter((table) => connectedTables.has(table.name));
+    const unconnected = tables.filter((table) => !connectedTables.has(table.name));
+    // Always keep dictionary / lookup tables in the diagram. They are grouped
+    // after connected tables so they do not get lost in the middle.
+    return [...connected, ...unconnected];
+  }, [data, connectedTables]);
 
   const edges = useMemo(
     () => allEdges.filter((e) => showInferred || e.kind !== "inferred"),
@@ -148,7 +270,7 @@ export function ErdView({ connectionId, database }: Props) {
   );
 
   const layout = useMemo(() => {
-    const tables = data?.tables ?? [];
+    const tables = visibleTables;
     if (tables.length === 0) {
       return { positions: new Map<string, Position>(), width: PAD * 2 + BOX_W, height: PAD * 2 };
     }
@@ -168,18 +290,25 @@ export function ErdView({ connectionId, database }: Props) {
 
     const positions = new Map<string, Position>();
     tables.forEach((table, i) => {
+      const manual = manualPositions[table.name];
       positions.set(table.name, {
-        x: PAD + (i % cols) * (BOX_W + GAP_X),
-        y: rowY[Math.floor(i / cols)],
+        x: manual?.x ?? PAD + (i % cols) * (BOX_W + GAP_X),
+        y: manual?.y ?? rowY[Math.floor(i / cols)],
         height: heights[i],
       });
     });
+    let maxX = 0;
+    let maxY = 0;
+    positions.forEach((position) => {
+      maxX = Math.max(maxX, position.x + BOX_W);
+      maxY = Math.max(maxY, position.y + position.height);
+    });
     return {
       positions,
-      width: PAD * 2 + cols * BOX_W + (cols - 1) * GAP_X,
-      height: y - GAP_Y + PAD,
+      width: Math.max(PAD * 2 + cols * BOX_W + (cols - 1) * GAP_X, maxX + PAD),
+      height: Math.max(y - GAP_Y + PAD, maxY + PAD),
     };
-  }, [data]);
+  }, [visibleTables, manualPositions]);
 
   const tableCounts = useMemo(() => {
     const counts = new Map<string, TableCounts>();
@@ -263,6 +392,12 @@ export function ErdView({ connectionId, database }: Props) {
   const resetView = () => {
     setScale(1);
     scrollRef.current?.scrollTo({ left: 0, top: 0 });
+    setPositionsState({ key: positionsKey, positions: {} });
+    try {
+      localStorage.removeItem(positionsKey);
+    } catch {
+      /* ignore unavailable storage */
+    }
   };
 
   return (
@@ -279,6 +414,11 @@ export function ErdView({ connectionId, database }: Props) {
             <Badge variant="secondary">
               {data.edges.length} {t("erd.relations", "relations")}
             </Badge>
+            {unconnectedCount > 0 && (
+              <Badge variant="outline" className="border-dashed">
+                {unconnectedCount} {t("erd.unconnected", "unconnected")}
+              </Badge>
+            )}
           </>
         )}
         <div className="ml-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -311,7 +451,12 @@ export function ErdView({ connectionId, database }: Props) {
           >
             <Plus />
           </Button>
-          <Button size="sm" variant="outline" onClick={resetView}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={resetView}
+            title={t("erd.resetHint", "Reset zoom, scroll and table positions")}
+          >
             {t("erd.reset", "Reset")}
           </Button>
           <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
@@ -348,9 +493,9 @@ export function ErdView({ connectionId, database }: Props) {
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
-        ) : !data || data.tables.length === 0 ? (
+        ) : !data || visibleTables.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t("erd.empty", "No tables in this database.")}
+            {t("erd.empty", "No tables to show.")}
           </div>
         ) : (
           <svg width={layout.width * scale} height={layout.height * scale} className="block">
@@ -398,16 +543,19 @@ export function ErdView({ connectionId, database }: Props) {
                 );
               })}
 
-              {data.tables.map((table) => {
+              {visibleTables.map((table) => {
                 const p = layout.positions.get(table.name);
                 if (!p) return null;
+                const unconnected = !connectedTables.has(table.name);
                 const counts = tableCounts.get(table.name) ?? { fk: 0, inferred: 0 };
-                const relationText = [
-                  `${counts.fk} FK`,
-                  counts.inferred ? `${counts.inferred} ${t("erd.inferredShort", "inferred")}` : "",
-                ]
-                  .filter(Boolean)
-                  .join(" · ");
+                const relationText = unconnected
+                  ? t("erd.noLinks", "No relations")
+                  : [
+                      `${counts.fk} FK`,
+                      counts.inferred ? `${counts.inferred} ${t("erd.inferredShort", "inferred")}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
                 const footerY = HEADER_H + Math.max(1, table.columns.length) * COLUMN_H;
                 return (
                   <g key={table.name} data-erd-box transform={`translate(${p.x},${p.y})`}>
@@ -415,14 +563,39 @@ export function ErdView({ connectionId, database }: Props) {
                       width={BOX_W}
                       height={p.height}
                       rx={8}
-                      className="fill-card stroke-border"
+                      className={unconnected ? "fill-card stroke-muted-foreground/40" : "fill-card stroke-border"}
                       strokeWidth={1}
+                      strokeDasharray={unconnected ? "5 3" : undefined}
                     />
-                    <rect width={BOX_W} height={HEADER_H} rx={8} className="fill-primary/15" />
-                    <rect y={HEADER_H - 8} width={BOX_W} height={8} className="fill-primary/15" />
-                    <text x={10} y={20} className="fill-foreground text-[11px] font-medium">
-                      {truncateName(table.name, 28)}
-                    </text>
+                    <g
+                      className={draggingTable === table.name ? "cursor-grabbing" : "cursor-move"}
+                      onMouseDown={(event) => beginTableDrag(table, p, event)}
+                    >
+                      <title>{t("erd.dragTableHint", "Drag to move table")}</title>
+                      <rect
+                        width={BOX_W}
+                        height={HEADER_H}
+                        rx={8}
+                        className={unconnected ? "fill-muted/40" : "fill-primary/15"}
+                      />
+                      <rect
+                        y={HEADER_H - 8}
+                        width={BOX_W}
+                        height={8}
+                        className={unconnected ? "fill-muted/40" : "fill-primary/15"}
+                      />
+                      <text x={10} y={20} className="fill-foreground text-[11px] font-medium">
+                        {truncateName(table.name, 26)}
+                      </text>
+                      <g transform={`translate(${BOX_W - 18},${HEADER_H / 2 - 2})`} className="fill-muted-foreground/60">
+                        <circle cx={0} cy={0} r={1} />
+                        <circle cx={4} cy={0} r={1} />
+                        <circle cx={8} cy={0} r={1} />
+                        <circle cx={0} cy={4} r={1} />
+                        <circle cx={4} cy={4} r={1} />
+                        <circle cx={8} cy={4} r={1} />
+                      </g>
+                    </g>
 
                     {table.columns.map((column, index) => {
                       const rowY = HEADER_H + index * COLUMN_H;
