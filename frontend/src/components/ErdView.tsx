@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Minus, Plus, RefreshCw, Share2 } from "lucide-react";
+import { LayoutGrid, Loader2, Maximize2, Minus, Plus, RefreshCw, Search, Share2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { ColumnDefInput, ErdColumn, ErdEdge, ErdResponse, ErdTable } from "@/lib/types";
 import { emptyColumn, normalizeInformationSchemaDefault, splitType } from "@/lib/schema";
@@ -8,6 +8,7 @@ import { useI18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { ColumnDialog } from "@/components/ColumnDialog";
 
 interface Props {
@@ -130,6 +131,7 @@ export function ErdView({ connectionId, database }: Props) {
   const [loading, setLoading] = useState(true);
   const [scale, setScale] = useState(1);
   const [showInferred, setShowInferred] = useState(true);
+  const [search, setSearch] = useState("");
   const [columnEdit, setColumnEdit] = useState<ColumnEditState | null>(null);
   const [draggingTable, setDraggingTable] = useState<string | null>(null);
   const positionsKey = `mysqlui.erd.positions:${connectionId}:${database}`;
@@ -269,6 +271,25 @@ export function ErdView({ connectionId, database }: Props) {
     [allEdges, showInferred]
   );
 
+  const searchQuery = search.trim().toLowerCase();
+  const matchedTableNames = useMemo(() => {
+    if (!searchQuery) return null;
+    const matches = new Set<string>();
+    for (const table of visibleTables) {
+      if (
+        table.name.toLowerCase().includes(searchQuery) ||
+        table.columns.some((column) => column.name.toLowerCase().includes(searchQuery))
+      ) {
+        matches.add(table.name);
+      }
+    }
+    return matches;
+  }, [visibleTables, searchQuery]);
+  const firstMatch = useMemo(
+    () => (matchedTableNames ? visibleTables.find((table) => matchedTableNames.has(table.name))?.name : undefined),
+    [matchedTableNames, visibleTables]
+  );
+
   const layout = useMemo(() => {
     const tables = visibleTables;
     if (tables.length === 0) {
@@ -309,6 +330,44 @@ export function ErdView({ connectionId, database }: Props) {
       height: Math.max(y - GAP_Y + PAD, maxY + PAD),
     };
   }, [visibleTables, manualPositions]);
+
+  useEffect(() => {
+    if (!searchQuery || !firstMatch) return;
+    const position = layout.positions.get(firstMatch);
+    const element = scrollRef.current;
+    if (!position || !element) return;
+    element.scrollTo({
+      left: Math.max(0, position.x * scale - 40),
+      top: Math.max(0, position.y * scale - 40),
+      behavior: "smooth",
+    });
+    // Only jump when the search result changes; dragging a table should not
+    // keep re-centering the viewport.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, firstMatch]);
+
+  const fitToView = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const next = Math.max(
+      0.3,
+      Math.min(
+        2.5,
+        Math.min((element.clientWidth - 24) / Math.max(1, layout.width), (element.clientHeight - 24) / Math.max(1, layout.height))
+      )
+    );
+    setScale(Number(next.toFixed(2)));
+    requestAnimationFrame(() => element.scrollTo({ left: 0, top: 0, behavior: "smooth" }));
+  }, [layout.width, layout.height]);
+
+  const autoLayout = () => {
+    setPositionsState({ key: positionsKey, positions: {} });
+    try {
+      localStorage.removeItem(positionsKey);
+    } catch {
+      /* ignore unavailable storage */
+    }
+  };
 
   const tableCounts = useMemo(() => {
     const counts = new Map<string, TableCounts>();
@@ -406,6 +465,16 @@ export function ErdView({ connectionId, database }: Props) {
         <Share2 className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium">{t("erd.title", "ER diagram")}</span>
         <span className="font-mono text-xs text-muted-foreground">{database}</span>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t("erd.search", "Find table or field…")}
+            aria-label={t("erd.search", "Find table or field…")}
+            className="h-7 w-[190px] pl-7 text-xs"
+          />
+        </div>
         {data && (
           <>
             <Badge variant="secondary">
@@ -450,6 +519,22 @@ export function ErdView({ connectionId, database }: Props) {
             onClick={() => setScale((s) => Math.min(2.5, +(s + 0.1).toFixed(2)))}
           >
             <Plus />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="outline"
+            title={t("erd.fit", "Fit to view")}
+            onClick={fitToView}
+          >
+            <Maximize2 />
+          </Button>
+          <Button
+            size="icon-sm"
+            variant="outline"
+            title={t("erd.autoLayout", "Auto layout")}
+            onClick={autoLayout}
+          >
+            <LayoutGrid />
           </Button>
           <Button
             size="sm"
@@ -528,8 +613,15 @@ export function ErdView({ connectionId, database }: Props) {
                 const to = layout.positions.get(edge.toTable);
                 if (!from || !to) return null;
                 const inferred = edge.kind === "inferred";
+                const dimmed =
+                  matchedTableNames !== null &&
+                  !matchedTableNames.has(edge.fromTable) &&
+                  !matchedTableNames.has(edge.toTable);
                 return (
-                  <g key={`${edge.fromTable}-${edge.fromColumn}-${edge.toTable}-${edge.toColumn}-${edge.constraint}-${i}`}>
+                  <g
+                    key={`${edge.fromTable}-${edge.fromColumn}-${edge.toTable}-${edge.toColumn}-${edge.constraint}-${i}`}
+                    opacity={dimmed ? 0.12 : 1}
+                  >
                     <title>{edgeTitle(edge)}</title>
                     <path
                       d={edgePath(edge, from, to, edgeBends.get(i) ?? 0)}
@@ -547,6 +639,7 @@ export function ErdView({ connectionId, database }: Props) {
                 const p = layout.positions.get(table.name);
                 if (!p) return null;
                 const unconnected = !connectedTables.has(table.name);
+                const dimmed = matchedTableNames !== null && !matchedTableNames.has(table.name);
                 const counts = tableCounts.get(table.name) ?? { fk: 0, inferred: 0 };
                 const relationText = unconnected
                   ? t("erd.noLinks", "No relations")
@@ -558,7 +651,13 @@ export function ErdView({ connectionId, database }: Props) {
                       .join(" · ");
                 const footerY = HEADER_H + Math.max(1, table.columns.length) * COLUMN_H;
                 return (
-                  <g key={table.name} data-erd-box transform={`translate(${p.x},${p.y})`}>
+                  <g
+                    key={table.name}
+                    data-erd-box
+                    transform={`translate(${p.x},${p.y})`}
+                    opacity={dimmed ? 0.25 : 1}
+                    className="transition-opacity"
+                  >
                     <rect
                       width={BOX_W}
                       height={p.height}

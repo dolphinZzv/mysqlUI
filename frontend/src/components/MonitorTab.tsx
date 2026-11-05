@@ -25,6 +25,7 @@ import {
 
 interface Props {
   connectionId: string;
+  active?: boolean;
 }
 
 function formatUptime(seconds: number): string {
@@ -45,7 +46,7 @@ function formatBytes(n: number): string {
 const REFRESH_KEY = "mysqlui.monitor.interval";
 const AUTO_KEY = "mysqlui.monitor.auto";
 
-export function MonitorTab({ connectionId }: Props) {
+export function MonitorTab({ connectionId, active = true }: Props) {
   const { t } = useI18n();
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
@@ -100,19 +101,20 @@ export function MonitorTab({ connectionId }: Props) {
   }, [connectionId]);
 
   useEffect(() => {
+    if (!active) return;
     void refresh();
     api.monitorStatus(connectionId).then(setStatus).catch(() => {});
     api.monitorVariables(connectionId).then(setVariables).catch(() => {});
-  }, [connectionId, refresh]);
+  }, [connectionId, refresh, active]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !active) return;
     const id = window.setInterval(() => {
       api.processList(connectionId).then(setProcesses).catch(() => {});
       api.monitorOverview(connectionId).then(setOverview).catch(() => {});
     }, refreshInterval * 1000);
     return () => window.clearInterval(id);
-  }, [autoRefresh, connectionId, refreshInterval]);
+  }, [autoRefresh, connectionId, refreshInterval, active]);
 
   const kill = async (queryOnly: boolean) => {
     if (!killTarget) return;

@@ -165,9 +165,10 @@ shipped as a **single binary** with the UI embedded.
 - **ER diagram** — visualize every table, field and key, including unconnected
   dictionary / lookup tables, alongside database foreign keys and inferred
   application-level relationships (for example `orders.user_id` → `users.id`)
-  with solid vs. dashed edges. Drag table headers to arrange the layout
-  (positions persist per database), click a field to edit it, or use **+** to
-  add a field without leaving the ERD.
+  with solid vs. dashed edges. Fit the diagram to the viewport, auto-arrange
+  the layout, search tables/fields, drag table headers to arrange it (positions
+  persist per database), click a field to edit it, or use **+** to add a field
+  without leaving the ERD.
 - **Schema diff** — compare two tables, see added/removed/changed columns and
   indexes, and generate or execute the migration SQL.
 - **Schema versioning** — "seal" (封板) a snapshot of a whole database's

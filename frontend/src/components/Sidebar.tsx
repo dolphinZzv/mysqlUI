@@ -41,6 +41,7 @@ import { unpinQuery, usePinnedQueries } from "@/lib/pinnedQueries";
 import { useRecentTables } from "@/lib/recentObjects";
 import { useFavorites } from "@/lib/favorites";
 import { useSavedTableViews } from "@/lib/tableViews";
+import { useI18n } from "@/lib/i18n";
 import { cn, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,6 +109,7 @@ export function Sidebar({
   onDatabaseDropped,
   onConnectionsChanged,
 }: Props) {
+  const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const pinnedQueries = usePinnedQueries();
   const recentTables = useRecentTables();
@@ -752,6 +754,17 @@ export function Sidebar({
                                   )}
                                 />
                                 <span className="min-w-0 flex-1 truncate">{db.name}</span>
+                                <button
+                                  className="rounded p-0.5 opacity-0 transition-opacity hover:bg-background/60 focus-visible:opacity-100 group-hover:opacity-100"
+                                  title={t("sidebar.erd", "ER diagram")}
+                                  aria-label={t("sidebar.erd", "ER diagram")}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenGeneric("erd", conn, db.name);
+                                  }}
+                                >
+                                  <Share2 className="h-3.5 w-3.5 text-muted-foreground" />
+                                </button>
                                 <button
                                   className="rounded p-0.5 opacity-0 transition-opacity hover:bg-background/60 group-hover:opacity-100"
                                   title="New table"

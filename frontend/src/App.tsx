@@ -146,6 +146,7 @@ export default function App() {
   );
   const [auth, setAuth] = useState<"checking" | "login" | "ready">("checking");
   const [connections, setConnections] = useState<Connection[]>([]);
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem(SIDEBAR_KEY));
@@ -153,6 +154,7 @@ export default function App() {
   });
   const [tabs, setTabs] = useState<TabDef[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [mountedTabIds, setMountedTabIds] = useState<Set<string>>(new Set());
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Connection | null>(null);
@@ -175,6 +177,7 @@ export default function App() {
     table: string | null;
   }>({ open: false, connection: null, database: null, table: null });
   const restored = useRef(false);
+  const initialRoutePending = useRef(true);
 
   // ---- URL routing -------------------------------------------------------
   // The active tab is mirrored in the URL so a refresh / shared link / browser
@@ -261,6 +264,8 @@ export default function App() {
     } catch (err) {
       toast.error(t("common.error", "Error"), { description: err instanceof Error ? err.message : String(err) });
       return [] as Connection[];
+    } finally {
+      setConnectionsLoaded(true);
     }
   }, [t]);
 
@@ -300,6 +305,18 @@ export default function App() {
     }
   }, [tabs, activeId]);
 
+  // Mount tabs lazily. Restored tabs stay in the tab bar, but hidden tabs do not
+  // fire their initial API calls until the user actually opens them.
+  useEffect(() => {
+    if (!activeId) return;
+    setMountedTabIds((previous) => {
+      if (previous.has(activeId)) return previous;
+      const next = new Set(previous);
+      next.add(activeId);
+      return next;
+    });
+  }, [activeId]);
+
   // Open (or activate) the tab named by the current URL. This runs after the
   // session has been restored from localStorage and the connections are known.
   useEffect(() => {
@@ -323,13 +340,24 @@ export default function App() {
   // Mirror the active tab back into the URL.
   useEffect(() => {
     if (!restoredReady) return;
+    if (initialRoutePending.current && route.kind !== "welcome") {
+      const matching = tabs.some((tab) => tabMatchesRoute(tab, route));
+      if (!matching) {
+        // Wait for the route effect to create/activate the tab. If the
+        // connection list is loaded and the target does not exist, fall back
+        // to the welcome route instead of staying on a dead URL forever.
+        if (!connectionsLoaded) return;
+        if (connections.some((connection) => connection.id === route.connectionId)) return;
+      }
+    }
+    initialRoutePending.current = false;
     const replace = !didInitialSync.current;
     didInitialSync.current = true;
     const tab = tabs.find((x) => x.id === activeId);
     const desired: Route = tab ? routeFromTab(tab) : { kind: "welcome" };
     if (sameRoute(desired, route)) return;
     navigate(desired, { replace });
-  }, [activeId, tabs, route, restoredReady, navigate]);
+  }, [activeId, tabs, route, restoredReady, navigate, connections, connectionsLoaded]);
 
   // ---- keyboard shortcuts ----
   useEffect(() => {
@@ -930,11 +958,15 @@ export default function App() {
                   hasConnections={connections.length > 0}
                 />
               ) : (
-                tabs.map((tab) => (
-                  <div key={tab.id} className={cn("absolute inset-0", tab.id === activeId ? "block" : "hidden")}>
-                    {renderTab(tab, connections, renameTab, closeTab, jumpToRef)}
-                  </div>
-                ))
+                tabs.map((tab) => {
+                  const active = tab.id === activeId;
+                  if (!active && !mountedTabIds.has(tab.id)) return null;
+                  return (
+                    <div key={tab.id} className={cn("absolute inset-0", active ? "block" : "hidden")}>
+                      {renderTab(tab, connections, renameTab, closeTab, jumpToRef, active)}
+                    </div>
+                  );
+                })
               )}
             </div>
           </main>
@@ -1003,7 +1035,8 @@ function renderTab(
   connections: Connection[],
   renameTab: (id: string, name: string) => void,
   onDropped: (id: string) => void,
-  onJumpRef: (connectionId: string, fk: ForeignKeyInfo, value: unknown) => void
+  onJumpRef: (connectionId: string, fk: ForeignKeyInfo, value: unknown) => void,
+  active: boolean
 ) {
   switch (tab.kind) {
     case "table":
@@ -1018,7 +1051,7 @@ function renderTab(
     case "query":
       return <QueryTab tab={tab} connections={connections} />;
     case "monitor":
-      return <MonitorTab connectionId={tab.connectionId} />;
+      return <MonitorTab connectionId={tab.connectionId} active={active} />;
     case "users":
       return <UsersTab connectionId={tab.connectionId} />;
     case "erd":

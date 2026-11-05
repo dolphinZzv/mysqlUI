@@ -79,9 +79,18 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := db.QueryContext(r.Context(), `
+	ctx := r.Context()
+	// account_locked is MySQL-specific. MariaDB (and older MySQL versions) do
+	// not expose it, so fall back to the common columns there.
+	rows, err := db.QueryContext(ctx, `
 		SELECT User, Host, COALESCE(plugin,''), COALESCE(account_locked,'N')
 		FROM mysql.user ORDER BY User, Host`)
+	hasAccountLocked := err == nil
+	if err != nil {
+		rows, err = db.QueryContext(ctx, `
+			SELECT User, Host, COALESCE(plugin,'')
+			FROM mysql.user ORDER BY User, Host`)
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -90,11 +99,23 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	out := make([]userInfo, 0)
 	for rows.Next() {
 		var u userInfo
-		if err := rows.Scan(&u.User, &u.Host, &u.Plugin, &u.AccountLocked); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
+		if hasAccountLocked {
+			if err := rows.Scan(&u.User, &u.Host, &u.Plugin, &u.AccountLocked); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+		} else {
+			if err := rows.Scan(&u.User, &u.Host, &u.Plugin); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
+			u.AccountLocked = "N"
 		}
 		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
