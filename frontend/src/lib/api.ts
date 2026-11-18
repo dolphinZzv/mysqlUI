@@ -409,6 +409,15 @@ export const api = {
       body: JSON.stringify({ connectionId, database }),
     }),
 
+  // error tracking
+  getTelemetrySettings: () =>
+    request<{ errorTracking: boolean }>("/telemetry", { cache: "no-store" }),
+  setTelemetrySettings: (errorTracking: boolean) =>
+    request<{ errorTracking: boolean }>("/telemetry", {
+      method: "PUT",
+      body: JSON.stringify({ errorTracking }),
+    }),
+
   // self-update
   updateStatus: () => request<UpdateStatus>("/update"),
   setUpdateSettings: (enabled: boolean, intervalMinutes: number) =>

@@ -110,10 +110,12 @@ func (a *authManager) authenticated(r *http.Request) bool {
 	return a.validToken(a.tokenFromRequest(r))
 }
 
-func isPublicAPIPath(path string) bool {
+func isPublicAPIPath(method, path string) bool {
 	switch path {
 	case "/api/auth/login", "/api/auth/logout", "/api/auth/status", "/api/version", "/api/health":
 		return true
+	case "/api/telemetry":
+		return method == http.MethodGet
 	}
 	return false
 }
@@ -122,7 +124,7 @@ func isPublicAPIPath(path string) bool {
 // public so the login screen can load.
 func (a *authManager) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !a.enabled || !strings.HasPrefix(r.URL.Path, "/api/") || isPublicAPIPath(r.URL.Path) {
+		if !a.enabled || !strings.HasPrefix(r.URL.Path, "/api/") || isPublicAPIPath(r.Method, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

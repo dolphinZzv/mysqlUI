@@ -18,6 +18,7 @@ const zh: Record<string, string> = {
   "app.themeLight": "浅色主题",
   "app.themeDark": "深色主题",
   "app.update": "软件更新",
+  "app.errorTracking": "错误跟踪",
   "app.backups": "定时备份",
   "backup.title": "定时备份",
   "backup.desc": "按计划将所有连接和数据库导出为 .sql 文件。",

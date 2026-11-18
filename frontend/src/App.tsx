@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Toaster, toast } from "sonner";
 import {
+  Bug,
   Database,
   HardDriveDownload,
   Languages,
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -161,6 +163,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [errorTracking, setErrorTracking] = useState<boolean | null>(null);
   const [backupOpen, setBackupOpen] = useState(false);
   const [connectionsToolsOpen, setConnectionsToolsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -195,6 +198,24 @@ export default function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    api.getTelemetrySettings()
+      .then((value) => setErrorTracking(value.errorTracking))
+      .catch(() => setErrorTracking(null));
+  }, []);
+
+  const toggleErrorTracking = async (enabled: boolean) => {
+    try {
+      const value = await api.setTelemetrySettings(enabled);
+      setErrorTracking(value.errorTracking);
+      // Catch installs its handlers at load time; reload so the change applies
+      // to this browser session immediately.
+      window.setTimeout(() => window.location.reload(), 250);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(sidebarWidth));
@@ -816,6 +837,14 @@ export default function App() {
                   {theme === "dark" ? <Sun /> : <Moon />}
                   {theme === "dark" ? t("app.themeLight", "Light theme") : t("app.themeDark", "Dark theme")}
                 </DropdownMenuItem>
+                <DropdownMenuCheckboxItem
+                  checked={errorTracking ?? true}
+                  onCheckedChange={(value) => void toggleErrorTracking(!!value)}
+                  onSelect={(event) => event.preventDefault()}
+                >
+                  <Bug /> {t("app.errorTracking", "Error tracking")}
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => setUpdateOpen(true)}>
                   <RefreshCw /> {t("app.update", "Update")}
                 </DropdownMenuItem>

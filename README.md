@@ -264,6 +264,12 @@ All configuration is via environment variables:
 | `MYSQLUI_SECRET_KEY` | `<data>/secret.key` | 32-byte master key (hex or base64) used to encrypt connection secrets at rest. Generated automatically on first run. |
 | `MYSQLUI_FRONTEND_DIR` | `../frontend/dist` | Frontend directory for non-embedded builds. |
 
+### Error tracking
+
+MySQL UI can report frontend and API errors to Catch. Configure `CATCH_URL` / `CATCH_KEY` for the server and build the frontend with `VITE_CATCH_URL` / `VITE_CATCH_INGEST_KEY`. Tracking starts enabled once those values are present.
+
+Use **Preferences → Error tracking** to disable or re-enable it. The switch is persisted in `<data>/telemetry.json`; disabling stops API reporting immediately and the page reloads so the browser SDK is not loaded. Leave the `CATCH_*` variables empty to disable the integration entirely.
+
 ## Authentication & HTTPS
 
 Set a password to protect the tool (recommended before exposing it to a network):

@@ -16,11 +16,12 @@ import (
 )
 
 type Server struct {
-	store    *Store
-	versions *SchemaVersionStore
-	auth     *authManager
-	updates  *updateManager
-	backups  *backupManager
+	store     *Store
+	versions  *SchemaVersionStore
+	auth      *authManager
+	updates   *updateManager
+	backups   *backupManager
+	telemetry *telemetryManager
 
 	queries     sync.Map
 	sessions    *querySessionManager
@@ -44,6 +45,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})
+	mux.HandleFunc("GET /api/telemetry", s.telemetryStatusHandler)
+	mux.HandleFunc("PUT /api/telemetry", s.telemetrySettingsHandler)
 
 	// scheduled backups
 	mux.HandleFunc("GET /api/backups", s.backupStatusHandler)

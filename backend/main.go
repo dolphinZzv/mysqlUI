@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"mysqlui/internal/catchreport"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
@@ -48,7 +50,9 @@ func runServer() {
 	updates := newUpdateManager(dir)
 	backups := newBackupManager(dir, store)
 	sessions := newQuerySessionManager()
-	srv := &Server{store: store, versions: versions, auth: auth, updates: updates, backups: backups, sessions: sessions}
+	telemetry := newTelemetryManager(dir)
+	catchreport.SetEnabled(telemetry.get().ErrorTracking)
+	srv := &Server{store: store, versions: versions, auth: auth, updates: updates, backups: backups, sessions: sessions, telemetry: telemetry}
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +64,9 @@ func runServer() {
 	serveFrontend(mux)
 
 	addr := listenAddr()
-	handler := auth.middleware(corsMiddleware(loggingMiddleware(mux)))
+	catch := catchreport.NewFromEnv()
+	catch.Startup("MySQLUI API started")
+	handler := catch.Wrap(auth.middleware(corsMiddleware(loggingMiddleware(mux))))
 	httpServer := &http.Server{Addr: addr, Handler: handler}
 
 	tlsCert := os.Getenv("MYSQLUI_TLS_CERT")
